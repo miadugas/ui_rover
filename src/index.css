@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens (ARCHI §11). The app chrome is deliberately neutral so saved
+ * palettes and screenshots read true against it: one grayscale ramp, one
+ * accent, a mono face for wireframe labels, one block radius.
+ *
+ * chrome-0 is the page background in light mode and chrome-900 the darkest
+ * ink; dark mode inverts the ramp in the `:root` override below, so every
+ * utility written against the scale (bg-chrome-100, text-chrome-700, …) keeps
+ * its meaning in both schemes and no component needs a `dark:` variant.
+ */
+@theme {
+  --color-chrome-0: #ffffff;
+  --color-chrome-50: #fafafa;
+  --color-chrome-100: #f4f4f5;
+  --color-chrome-200: #e4e4e7;
+  --color-chrome-300: #d4d4d8;
+  --color-chrome-400: #a1a1aa;
+  --color-chrome-500: #71717a;
+  --color-chrome-600: #52525b;
+  --color-chrome-700: #3f3f46;
+  --color-chrome-800: #27272a;
+  --color-chrome-900: #131316;
+
+  --color-accent: #2563eb;
+
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --radius-block: 0.25rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-chrome-0: #0b0b0d;
+    --color-chrome-50: #131316;
+    --color-chrome-100: #18181b;
+    --color-chrome-200: #232327;
+    --color-chrome-300: #2e2e33;
+    --color-chrome-400: #52525b;
+    --color-chrome-500: #7c7c86;
+    --color-chrome-600: #a1a1aa;
+    --color-chrome-700: #c4c4cc;
+    --color-chrome-800: #e4e4e7;
+    --color-chrome-900: #fafafa;
+
+    --color-accent: #60a5fa;
+  }
+}
+
+/* Wireframe base: flat surfaces, no shadows, chrome ink on chrome paper. */
+body {
+  background-color: var(--color-chrome-0);
+  color: var(--color-chrome-800);
+}
+
+/* Dashed hairline used for placeholder / empty wireframe blocks. */
+@utility wire {
+  border: 1px dashed var(--color-chrome-300);
+}
+
+/* Mono uppercase micro-label used for block and section names. */
+@utility label-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+}

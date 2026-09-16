@@ -1,0 +1,425 @@
+import { deleteDB, openDB } from 'idb'
+import type { DBSchema, IDBPDatabase } from 'idb'
+import type { Entry, ImageRecord, Kind } from '../types'
+
+const DATABASE_NAME = 'ui-rover'
+const DATABASE_VERSION = 1
+
+export interface UiRoverDB extends DBSchema {
+  entries: {
+    key: string
+    value: Entry
+    indexes: {
+      'by-url': string
+      'by-kind': Kind
+      'by-createdAt': number
+    }
+  }
+  images: {
+    key: string
+    value: ImageRecord
+    indexes: {
+      'by-entry': string
+    }
+  }
+}
+
+export type EntryPatch = Partial<Omit<Entry, 'id'>>
+
+export interface ImportEntry {
+  entry: Entry
+  images: ImageRecord[]
+}
+
+type ChangeListener = () => void
+
+let databasePromise: Promise<IDBPDatabase<UiRoverDB> | null> | null = null
+let inMemory = false
+let memoryEntries = new Map<string, Entry>()
+let memoryImages = new Map<string, ImageRecord>()
+
+const changeListeners = new Set<ChangeListener>()
+const updateQueues = new Map<string, Promise<void>>()
+
+function cloneEntry(entry: Entry): Entry {
+  return {
+    ...entry,
+    images: entry.images.map((image) => ({ ...image })),
+    tags: [...entry.tags],
+    ...(entry.colors ? { colors: [...entry.colors] } : {}),
+    ...(entry.roleMap ? { roleMap: { ...entry.roleMap } } : {}),
+    ...(entry.blockOverrides
+      ? { blockOverrides: { ...entry.blockOverrides } }
+      : {}),
+  }
+}
+
+function cloneImage(image: ImageRecord): ImageRecord {
+  return { ...image }
+}
+
+function constraintError(message: string): DOMException {
+  return new DOMException(message, 'ConstraintError')
+}
+
+function dataError(message: string): DOMException {
+  return new DOMException(message, 'DataError')
+}
+
+function assertImagesBelongToEntry(
+  entry: Entry,
+  images: readonly ImageRecord[],
+): void {
+  if (images.length === 0) {
+    throw dataError('An entry must have at least one image')
+  }
+
+  const hasMismatchedImage = images.some((image) => image.entryId !== entry.id)
+  if (hasMismatchedImage) {
+    throw dataError('Every image must belong to its entry')
+  }
+}
+
+function addToMemoryMaps(
+  entries: Map<string, Entry>,
+  images: Map<string, ImageRecord>,
+  item: ImportEntry,
+): void {
+  assertImagesBelongToEntry(item.entry, item.images)
+
+  if (entries.has(item.entry.id)) {
+    throw constraintError(`Entry ${item.entry.id} already exists`)
+  }
+
+  const duplicateUrl = Array.from(entries.values()).some(
+    (entry) => entry.url === item.entry.url,
+  )
+  if (duplicateUrl) {
+    throw constraintError(`URL ${item.entry.url} already exists`)
+  }
+
+  entries.set(item.entry.id, cloneEntry(item.entry))
+
+  for (const image of item.images) {
+    if (images.has(image.id)) {
+      throw constraintError(`Image ${image.id} already exists`)
+    }
+    images.set(image.id, cloneImage(image))
+  }
+}
+
+function applyMemoryBatch(batch: readonly ImportEntry[], replace: boolean): void {
+  const nextEntries = replace
+    ? new Map<string, Entry>()
+    : new Map(memoryEntries)
+  const nextImages = replace
+    ? new Map<string, ImageRecord>()
+    : new Map(memoryImages)
+
+  for (const item of batch) {
+    addToMemoryMaps(nextEntries, nextImages, item)
+  }
+
+  memoryEntries = nextEntries
+  memoryImages = nextImages
+}
+
+function emitChange(): void {
+  for (const listener of changeListeners) {
+    listener()
+  }
+}
+
+async function abortAndRethrow(
+  transaction: { abort(): void; done: Promise<unknown> },
+  error: unknown,
+): Promise<never> {
+  try {
+    transaction.abort()
+  } catch {
+    // The failed request may already have aborted the transaction.
+  }
+
+  await transaction.done.catch(() => undefined)
+  throw error
+}
+
+async function openIndexedDb(): Promise<IDBPDatabase<UiRoverDB> | null> {
+  if (typeof indexedDB === 'undefined') {
+    inMemory = true
+    return null
+  }
+
+  try {
+    return await openDB<UiRoverDB>(DATABASE_NAME, DATABASE_VERSION, {
+      upgrade(database) {
+        const entries = database.createObjectStore('entries', {
+          keyPath: 'id',
+        })
+        entries.createIndex('by-url', 'url', { unique: true })
+        entries.createIndex('by-kind', 'kind')
+        entries.createIndex('by-createdAt', 'createdAt')
+
+        const images = database.createObjectStore('images', {
+          keyPath: 'id',
+        })
+        images.createIndex('by-entry', 'entryId')
+      },
+    })
+  } catch {
+    inMemory = true
+    return null
+  }
+}
+
+export function openDb(): Promise<IDBPDatabase<UiRoverDB> | null> {
+  if (inMemory) return Promise.resolve(null)
+
+  databasePromise ??= openIndexedDb()
+  return databasePromise
+}
+
+export function isInMemory(): boolean {
+  return inMemory
+}
+
+export function subscribe(listener: ChangeListener): () => void {
+  changeListeners.add(listener)
+  return () => changeListeners.delete(listener)
+}
+
+export async function createEntry(
+  entry: Entry,
+  images: ImageRecord[],
+): Promise<void> {
+  assertImagesBelongToEntry(entry, images)
+
+  const database = await openDb()
+  if (!database) {
+    applyMemoryBatch([{ entry, images }], false)
+    emitChange()
+    return
+  }
+
+  const transaction = database.transaction(['entries', 'images'], 'readwrite')
+
+  try {
+    await transaction.objectStore('entries').add(entry)
+    for (const image of images) {
+      await transaction.objectStore('images').add(image)
+    }
+    await transaction.done
+  } catch (error) {
+    return abortAndRethrow(transaction, error)
+  }
+
+  emitChange()
+}
+
+export async function deleteEntry(id: string): Promise<void> {
+  const database = await openDb()
+  if (!database) {
+    memoryEntries.delete(id)
+    for (const [imageId, image] of memoryImages) {
+      if (image.entryId === id) memoryImages.delete(imageId)
+    }
+    emitChange()
+    return
+  }
+
+  const transaction = database.transaction(['entries', 'images'], 'readwrite')
+
+  try {
+    const imageStore = transaction.objectStore('images')
+    const imageIds = await imageStore.index('by-entry').getAllKeys(id)
+    for (const imageId of imageIds) {
+      await imageStore.delete(imageId)
+    }
+    await transaction.objectStore('entries').delete(id)
+    await transaction.done
+  } catch (error) {
+    return abortAndRethrow(transaction, error)
+  }
+
+  emitChange()
+}
+
+async function performUpdate(id: string, patch: EntryPatch): Promise<void> {
+  const database = await openDb()
+  if (!database) {
+    const currentEntry = memoryEntries.get(id)
+    if (!currentEntry) throw dataError(`Entry ${id} does not exist`)
+
+    const nextEntry = cloneEntry({ ...currentEntry, ...patch, id })
+    const duplicateUrl = Array.from(memoryEntries.values()).some(
+      (entry) => entry.id !== id && entry.url === nextEntry.url,
+    )
+    if (duplicateUrl) {
+      throw constraintError(`URL ${nextEntry.url} already exists`)
+    }
+
+    memoryEntries.set(id, nextEntry)
+    return
+  }
+
+  const transaction = database.transaction('entries', 'readwrite')
+
+  try {
+    const store = transaction.objectStore('entries')
+    const currentEntry = await store.get(id)
+    if (!currentEntry) throw dataError(`Entry ${id} does not exist`)
+
+    await store.put({ ...currentEntry, ...patch, id })
+    await transaction.done
+  } catch (error) {
+    return abortAndRethrow(transaction, error)
+  }
+}
+
+export function updateEntry(id: string, patch: EntryPatch): Promise<void> {
+  const previousUpdate = updateQueues.get(id) ?? Promise.resolve()
+  const queuedUpdate = previousUpdate
+    .catch(() => undefined)
+    .then(async () => {
+      await performUpdate(id, patch)
+      emitChange()
+    })
+
+  updateQueues.set(id, queuedUpdate)
+  void queuedUpdate
+    .finally(() => {
+      if (updateQueues.get(id) === queuedUpdate) updateQueues.delete(id)
+    })
+    .catch(() => undefined)
+
+  return queuedUpdate
+}
+
+export async function getEntry(id: string): Promise<Entry | undefined> {
+  const database = await openDb()
+  if (!database) {
+    const entry = memoryEntries.get(id)
+    return entry ? cloneEntry(entry) : undefined
+  }
+
+  return database.get('entries', id)
+}
+
+export async function listEntries(): Promise<Entry[]> {
+  const database = await openDb()
+  const entries = database
+    ? await database.getAll('entries')
+    : Array.from(memoryEntries.values(), cloneEntry)
+
+  return entries.sort(
+    (left, right) =>
+      right.createdAt - left.createdAt || right.id.localeCompare(left.id),
+  )
+}
+
+export async function getImageBlob(id: string): Promise<Blob | undefined> {
+  const database = await openDb()
+  if (!database) return memoryImages.get(id)?.blob
+
+  return (await database.get('images', id))?.blob
+}
+
+export async function getThumbBlob(id: string): Promise<Blob | undefined> {
+  const database = await openDb()
+  if (!database) return memoryImages.get(id)?.thumb
+
+  return (await database.get('images', id))?.thumb
+}
+
+export async function listImagesForEntry(
+  entryId: string,
+): Promise<ImageRecord[]> {
+  const database = await openDb()
+  const images = database
+    ? await database.getAllFromIndex('images', 'by-entry', entryId)
+    : Array.from(memoryImages.values())
+        .filter((image) => image.entryId === entryId)
+        .map(cloneImage)
+
+  return images.sort((left, right) => left.order - right.order)
+}
+
+export async function findByUrl(url: string): Promise<Entry | undefined> {
+  const database = await openDb()
+  if (!database) {
+    const entry = Array.from(memoryEntries.values()).find(
+      (candidate) => candidate.url === url,
+    )
+    return entry ? cloneEntry(entry) : undefined
+  }
+
+  return database.getFromIndex('entries', 'by-url', url)
+}
+
+async function writeBatch(
+  batch: ImportEntry[],
+  replace: boolean,
+): Promise<void> {
+  for (const item of batch) {
+    assertImagesBelongToEntry(item.entry, item.images)
+  }
+
+  const database = await openDb()
+  if (!database) {
+    applyMemoryBatch(batch, replace)
+    emitChange()
+    return
+  }
+
+  const transaction = database.transaction(['entries', 'images'], 'readwrite')
+
+  try {
+    const entryStore = transaction.objectStore('entries')
+    const imageStore = transaction.objectStore('images')
+
+    if (replace) {
+      await entryStore.clear()
+      await imageStore.clear()
+    }
+
+    for (const item of batch) {
+      await entryStore.add(item.entry)
+      for (const image of item.images) {
+        await imageStore.add(image)
+      }
+    }
+
+    await transaction.done
+  } catch (error) {
+    return abortAndRethrow(transaction, error)
+  }
+
+  emitChange()
+}
+
+export function importEntries(batch: ImportEntry[]): Promise<void> {
+  return writeBatch(batch, false)
+}
+
+export function replaceAll(batch: ImportEntry[]): Promise<void> {
+  return writeBatch(batch, true)
+}
+
+export async function __resetDatabaseForTests(
+  options: { forceInMemory?: boolean } = {},
+): Promise<void> {
+  const pendingDatabase = databasePromise
+  databasePromise = null
+
+  const database = await pendingDatabase?.catch(() => null)
+  database?.close()
+
+  memoryEntries.clear()
+  memoryImages.clear()
+  updateQueues.clear()
+  inMemory = options.forceInMemory ?? false
+
+  if (typeof indexedDB !== 'undefined') {
+    await deleteDB(DATABASE_NAME)
+  }
+}
