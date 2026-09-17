@@ -234,6 +234,72 @@ describe('export and import', () => {
     expectProblem(incompleteRoles, 'entries[0].roleMap.surface')
   })
 
+  it('round-trips paletteSource and crop through export and import', async () => {
+    const entryWithRead = fixture(
+      'read-fields',
+      'https://instagram.com/p/read-fields',
+    )
+    entryWithRead.entry.kind = 'palette'
+    entryWithRead.entry.colors = ['#ffffff', '#ff0000', '#000000']
+    entryWithRead.entry.roleMap = { ...ROLE_MAP }
+    entryWithRead.entry.paletteSource = 'ocr'
+    entryWithRead.entry.crop = {
+      imageId: 'read-fields-image',
+      x: 0.1,
+      y: 0.2,
+      w: 0.5,
+      h: 0.3,
+    }
+    await createEntry(entryWithRead.entry, entryWithRead.images)
+
+    const { file } = await buildExport()
+    await __resetDatabaseForTests()
+
+    const validation = validateExportFile(JSON.parse(JSON.stringify(file)))
+    expect(validation.ok).toBe(true)
+    if (!validation.ok) throw new Error(validation.problem)
+
+    const batch = await prepareImport(validation.file)
+    await importMerge(batch)
+
+    const [imported] = await listEntries()
+    expect(imported.paletteSource).toBe('ocr')
+    expect(imported.crop).toEqual(entryWithRead.entry.crop)
+  })
+
+  it('validates a file without paletteSource/crop unchanged', () => {
+    const file = validExportFile()
+    const validation = validateExportFile(file)
+    expect(validation.ok).toBe(true)
+  })
+
+  it('rejects an invalid paletteSource, crop.imageId, and crop.w', () => {
+    const badSource = validExportFile()
+    // @ts-expect-error deliberately invalid for the test
+    badSource.entries[0].paletteSource = 'manual'
+    expectProblem(badSource, 'entries[0].paletteSource')
+
+    const badImageId = validExportFile()
+    badImageId.entries[0].crop = {
+      imageId: 'not-this-entrys-image',
+      x: 0.1,
+      y: 0.1,
+      w: 0.2,
+      h: 0.2,
+    }
+    expectProblem(badImageId, 'entries[0].crop.imageId')
+
+    const tinyCrop = validExportFile()
+    tinyCrop.entries[0].crop = {
+      imageId: 'valid-image',
+      x: 0.1,
+      y: 0.1,
+      w: 0.01,
+      h: 0.2,
+    }
+    expectProblem(tinyCrop, 'entries[0].crop.w')
+  })
+
   it('rolls back a merge when a later image id collides', async () => {
     const first = fixture(
       'atomic-merge-first',

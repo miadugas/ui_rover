@@ -4,15 +4,55 @@ import { ulid } from 'ulid'
 import { Button } from '../../components/Button'
 import { createEntry } from '../../lib/db'
 import { extract } from '../palette/extract'
-import type { Entry, ExtractResult, ImageRecord, Kind, ParsedPostUrl } from '../../types'
+import { readProgressLabel } from '../palette/read/readProgressLabel'
+import { readPalette } from '../palette/read/readPalette'
+import type { ReadResult } from '../palette/read/readPalette'
+import { ReadCancelledError, createReadController } from '../palette/read/readProgress'
+import type { ReadController, ReadProgress } from '../palette/read/readProgress'
+import type {
+  Entry,
+  ImageRecord,
+  Kind,
+  PaletteSource,
+  ParsedPostUrl,
+  RoleMap,
+} from '../../types'
 import { ImageTray } from './ImageTray'
 import { KindToggle } from './KindToggle'
 import { UrlField } from './UrlField'
 import { useImageIntake } from './useImageIntake'
 
+interface SavedPalette {
+  colors: string[]
+  roleMap: RoleMap
+  source: PaletteSource
+}
+
 export const EXTRACTION_WARNING = "Couldn't read colors from that image — saved as a design"
 
 const SAVE_ERROR = 'Could not save this entry. Nothing was lost — try again.'
+
+function saveLabel(phase: ReadProgress | null): string {
+  return phase ? readProgressLabel(phase) : 'Saving…'
+}
+
+async function quantizeFallback(
+  error: unknown,
+  blob: Blob,
+): Promise<SavedPalette | null> {
+  if (!(error instanceof ReadCancelledError)) return null
+
+  try {
+    const quantized = await extract(blob)
+    return {
+      colors: quantized.colors,
+      roleMap: quantized.roleMap,
+      source: 'quantize',
+    }
+  } catch {
+    return null
+  }
+}
 
 export function CaptureCard() {
   const navigate = useNavigate()
@@ -25,9 +65,11 @@ export function CaptureCard() {
   const [sourceTempId, setSourceTempId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [readPhase, setReadPhase] = useState<ReadProgress | null>(null)
 
   const trayHeadingRef = useRef<HTMLHeadingElement>(null)
   const imageCountRef = useRef(0)
+  const readControllerRef = useRef<ReadController | null>(null)
 
   useEffect(() => {
     const previousCount = imageCountRef.current
@@ -59,15 +101,37 @@ export function CaptureCard() {
     const sourceIdx = requestedSourceIdx < 0 ? 0 : requestedSourceIdx
 
     let savedKind = kind
-    let extraction: ExtractResult | null = null
+    let palette: SavedPalette | null = null
+    let readResult: ReadResult | null = null
     let extractionFailed = false
 
     if (kind === 'palette') {
+      const sourceBlob = intake.images[sourceIdx].blob
+      const controller = createReadController()
+      readControllerRef.current = controller
+
       try {
-        extraction = await extract(intake.images[sourceIdx].blob)
-      } catch {
-        savedKind = 'design'
-        extractionFailed = true
+        readResult = await readPalette(sourceBlob, {
+          sourceImageId: records[sourceIdx].id,
+          onProgress: setReadPhase,
+          signal: controller.signal,
+        })
+        palette = {
+          colors: readResult.colors,
+          roleMap: readResult.roleMap,
+          source: readResult.source,
+        }
+      } catch (error) {
+        // Cancelling the read must not cost her the entry, so Capture — and
+        // only Capture — falls back to the plain quantize pass.
+        palette = await quantizeFallback(error, sourceBlob)
+        if (!palette) {
+          savedKind = 'design'
+          extractionFailed = true
+        }
+      } finally {
+        readControllerRef.current = null
+        setReadPhase(null)
       }
     }
 
@@ -86,11 +150,12 @@ export function CaptureCard() {
         height,
         mime,
       })),
-      ...(extraction
+      ...(palette
         ? {
             sourceImageId: records[sourceIdx].id,
-            colors: extraction.colors,
-            roleMap: extraction.roleMap,
+            colors: palette.colors,
+            roleMap: palette.roleMap,
+            paletteSource: palette.source,
             mockTemplate: 'ecommerce' as const,
           }
         : {}),
@@ -119,6 +184,7 @@ export function CaptureCard() {
       state: {
         ...(extractionFailed ? { notice: EXTRACTION_WARNING } : {}),
         focusHeading: true,
+        ...(readResult ? { pendingRead: readResult } : {}),
       },
     })
   }
@@ -154,8 +220,17 @@ export function CaptureCard() {
 
       <div className="flex items-center gap-3">
         <Button disabled={!canSave} onClick={() => void handleSave()}>
-          {saving ? 'Saving…' : 'Save'}
+          {saving ? saveLabel(readPhase) : 'Save'}
         </Button>
+        {readPhase && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => readControllerRef.current?.cancel()}
+          >
+            Cancel read
+          </Button>
+        )}
         {saveError && (
           <p className="text-xs text-accent" role="alert">
             {saveError}

@@ -1,4 +1,5 @@
 import { makeThumb } from '../features/capture/imageMeta'
+import { MIN_CROP_EDGE } from '../features/palette/read/cropRect'
 import { MOCK_TEMPLATE_IDS, ROLES } from '../types'
 import type { Entry, ExportFileV1, ImageRecord } from '../types'
 import {
@@ -18,6 +19,7 @@ const HEX_COLOR = /^#[0-9a-f]{6}$/i
 const PLATFORMS = new Set(['instagram', 'threads'])
 const KINDS = new Set(['palette', 'design'])
 const MOCK_TEMPLATES = new Set<string>(MOCK_TEMPLATE_IDS)
+const PALETTE_SOURCES = new Set(['ocr', 'blobs', 'quantize'])
 
 export const EXPORT_WARN_BYTES = 150 * 1024 * 1024
 
@@ -155,6 +157,58 @@ function validateEntry(value: unknown, path: string): string | null {
   ) {
     return `${path}.mockTemplate must be a known template id`
   }
+
+  if (
+    'paletteSource' in value &&
+    (typeof value.paletteSource !== 'string' ||
+      !PALETTE_SOURCES.has(value.paletteSource))
+  ) {
+    return `${path}.paletteSource must be ocr, blobs, or quantize`
+  }
+
+  if ('crop' in value) {
+    const cropProblem = validateCrop(value.crop, value.images, `${path}.crop`)
+    if (cropProblem) return cropProblem
+  }
+
+  return null
+}
+
+function validateCrop(
+  value: unknown,
+  images: unknown,
+  path: string,
+): string | null {
+  if (!isRecord(value)) return `${path} must be an object`
+
+  const imageIdProblem = stringProblem(value.imageId, `${path}.imageId`)
+  if (imageIdProblem) return imageIdProblem
+
+  const knownImageIds = Array.isArray(images)
+    ? new Set(
+        images.map((image) => (isRecord(image) ? image.id : undefined)),
+      )
+    : new Set()
+  if (!knownImageIds.has(value.imageId)) {
+    return `${path}.imageId must match one of this entry's images`
+  }
+
+  for (const key of ['x', 'y', 'w', 'h'] as const) {
+    const problem = numberProblem(value[key], `${path}.${key}`)
+    if (problem) return problem
+  }
+
+  const x = value.x as number
+  const y = value.y as number
+  const w = value.w as number
+  const h = value.h as number
+
+  if (x < 0 || x > 1) return `${path}.x must be between 0 and 1`
+  if (y < 0 || y > 1) return `${path}.y must be between 0 and 1`
+  if (w < MIN_CROP_EDGE) return `${path}.w must be at least ${MIN_CROP_EDGE}`
+  if (h < MIN_CROP_EDGE) return `${path}.h must be at least ${MIN_CROP_EDGE}`
+  if (x + w > 1) return `${path}.w must satisfy x + w <= 1`
+  if (y + h > 1) return `${path}.h must satisfy y + h <= 1`
 
   return null
 }

@@ -58,6 +58,21 @@ function cloneImage(image: ImageRecord): ImageRecord {
   return { ...image }
 }
 
+// IndexedDB stores the whole `Entry`, and structured clone keeps a key whose
+// value is `undefined`. Clearing an optional field (`crop`) therefore has to
+// delete the key, not merely spread `undefined` over it — otherwise the stored
+// object grows a tombstone that every later read has to reason about.
+function applyPatch(currentEntry: Entry, patch: EntryPatch, id: string): Entry {
+  const nextEntry: Entry = { ...currentEntry, ...patch, id }
+  const keys = nextEntry as unknown as Record<string, unknown>
+
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete keys[key]
+  }
+
+  return nextEntry
+}
+
 function constraintError(message: string): DOMException {
   return new DOMException(message, 'ConstraintError')
 }
@@ -250,7 +265,7 @@ async function performUpdate(id: string, patch: EntryPatch): Promise<void> {
     const currentEntry = memoryEntries.get(id)
     if (!currentEntry) throw dataError(`Entry ${id} does not exist`)
 
-    const nextEntry = cloneEntry({ ...currentEntry, ...patch, id })
+    const nextEntry = cloneEntry(applyPatch(currentEntry, patch, id))
     const duplicateUrl = Array.from(memoryEntries.values()).some(
       (entry) => entry.id !== id && entry.url === nextEntry.url,
     )
@@ -269,7 +284,7 @@ async function performUpdate(id: string, patch: EntryPatch): Promise<void> {
     const currentEntry = await store.get(id)
     if (!currentEntry) throw dataError(`Entry ${id} does not exist`)
 
-    await store.put({ ...currentEntry, ...patch, id })
+    await store.put(applyPatch(currentEntry, patch, id))
     await transaction.done
   } catch (error) {
     return abortAndRethrow(transaction, error)

@@ -4,13 +4,21 @@ import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { __resetDatabaseForTests, createEntry, getEntry } from '../lib/db'
 import type { Entry, ImageRecord, RoleMap } from '../types'
+import type { ReadResult } from '../features/palette/read/readPalette'
+import { ReadCancelledError } from '../features/palette/read/readProgress'
 import { EntryPage } from './EntryPage'
 
-const extractMock = vi.hoisted(() => vi.fn())
+const readPaletteMock = vi.hoisted(() => vi.fn())
 
-vi.mock('../features/palette/extract', () => ({
-  extract: extractMock,
-  ExtractionError: class ExtractionError extends Error {},
+// Mocking the orchestrator keeps Tesseract, its worker and the Canvas crop out
+// of jsdom; every read on this page goes through it.
+vi.mock('../features/palette/read/readPalette', () => ({
+  readPalette: readPaletteMock,
+}))
+
+vi.mock('../features/palette/read/ocrWorker', () => ({
+  recognizeWords: vi.fn(),
+  releaseWorkerSoon: vi.fn(),
 }))
 
 const deleteEntryMock = vi.hoisted(() => vi.fn())
@@ -39,6 +47,21 @@ const ROLE_MAP: RoleMap = {
 }
 
 const COLORS = ['#ffffff', '#2244ff', '#111111']
+
+function readResult(overrides: Partial<ReadResult> = {}): ReadResult {
+  return {
+    colors: COLORS,
+    roleMap: ROLE_MAP,
+    degraded: false,
+    source: 'ocr',
+    candidates: COLORS.map((hex) => ({
+      hex,
+      source: 'ocr' as const,
+      confidence: 92,
+    })),
+    ...overrides,
+  }
+}
 
 function imageRecord(entryId: string, id: string): ImageRecord {
   return {
@@ -79,7 +102,13 @@ async function seed(entry: Entry): Promise<void> {
   await createEntry(entry, [imageRecord(entry.id, entry.images[0].id)])
 }
 
-function renderEntry(id: string, state?: { notice?: string; focusHeading?: boolean }) {
+interface RouterHandoff {
+  notice?: string
+  focusHeading?: boolean
+  pendingRead?: ReadResult
+}
+
+function renderEntry(id: string, state?: RouterHandoff) {
   render(
     <MemoryRouter initialEntries={[{ pathname: `/entry/${id}`, state }]}>
       <Routes>
@@ -92,7 +121,7 @@ function renderEntry(id: string, state?: { notice?: string; focusHeading?: boole
 
 beforeEach(async () => {
   await __resetDatabaseForTests()
-  extractMock.mockReset()
+  readPaletteMock.mockReset()
   deleteEntryMock.mockReset()
   deleteEntryMock.mockImplementation((id: string) => realDb.deleteEntry(id))
 })
@@ -124,7 +153,7 @@ describe('EntryPage', () => {
 
   it('extracts and persists a palette for a design entry', async () => {
     const user = userEvent.setup()
-    extractMock.mockResolvedValue({ colors: COLORS, roleMap: ROLE_MAP, degraded: false })
+    readPaletteMock.mockResolvedValue(readResult())
     await seed(
       entryFixture({
         id: 'entry-2',
@@ -149,12 +178,25 @@ describe('EntryPage', () => {
       expect(stored?.sourceImageId).toBe('entry-2-img')
     })
 
-    expect(extractMock).toHaveBeenCalledTimes(1)
+    expect(readPaletteMock).toHaveBeenCalledTimes(1)
+    // The blob comes back through fake-indexeddb, so it is not the jsdom realm's
+    // `Blob` and `expect.any(Blob)` would miss it.
+    expect(readPaletteMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        sourceImageId: 'entry-2-img',
+        signal: expect.any(AbortSignal),
+      }),
+    )
+    expect((await getEntry('entry-2'))?.paletteSource).toBe('ocr')
+    expect(
+      await screen.findByText('Read 3 hex codes from the card'),
+    ).toBeInTheDocument()
   })
 
   it('reports an unreadable image instead of writing colors', async () => {
     const user = userEvent.setup()
-    extractMock.mockRejectedValue(new Error('no colors'))
+    readPaletteMock.mockRejectedValue(new Error('no colors'))
     await seed(
       entryFixture({
         id: 'entry-3',
@@ -192,7 +234,7 @@ describe('EntryPage', () => {
 
   it('re-extracts a design palette from another selected image', async () => {
     const user = userEvent.setup()
-    extractMock.mockResolvedValue({ colors: COLORS, roleMap: ROLE_MAP, degraded: false })
+    readPaletteMock.mockResolvedValue(readResult())
 
     const entry = entryFixture({
       id: 'entry-6',
@@ -281,5 +323,52 @@ describe('EntryPage', () => {
 
     await screen.findByRole('heading', { name: 'entry-9' })
     expect(document.activeElement).toBe(document.body)
+  })
+
+  it('opens the handed-over review once and clears it from the history', async () => {
+    const user = userEvent.setup()
+    await seed(entryFixture({ id: 'entry-10' }))
+    renderEntry('entry-10', { focusHeading: true, pendingRead: readResult() })
+
+    expect(
+      await screen.findByText('Read 3 hex codes from the card'),
+    ).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText('Read 3 hex codes from the card'),
+      ).not.toBeInTheDocument(),
+    )
+    expect(screen.getByRole('button', { name: 'Read palette' })).toBeInTheDocument()
+  })
+
+  it('leaves a design entry untouched when the first read is cancelled', async () => {
+    const user = userEvent.setup()
+    readPaletteMock.mockRejectedValue(new ReadCancelledError())
+    await seed(
+      entryFixture({
+        id: 'entry-11',
+        kind: 'design',
+        colors: undefined,
+        roleMap: undefined,
+        sourceImageId: undefined,
+        mockTemplate: undefined,
+      }),
+    )
+    renderEntry('entry-11')
+
+    const extractButton = await screen.findByRole('button', { name: 'Extract palette' })
+    await waitFor(() => expect(extractButton).toBeEnabled())
+    await user.click(extractButton)
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Extract palette' })).toBeEnabled(),
+    )
+    const stored = await getEntry('entry-11')
+    expect(stored?.colors).toBeUndefined()
+    expect(stored?.paletteSource).toBeUndefined()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

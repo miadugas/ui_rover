@@ -7,7 +7,17 @@ import { ImageCarousel } from '../features/library/ImageCarousel'
 import { NoteField } from '../features/library/NoteField'
 import { TagEditor } from '../features/library/TagEditor'
 import { MockPanel } from '../features/palette/mock/MockPanel'
-import { extract } from '../features/palette/extract'
+import { readProgressLabel } from '../features/palette/read/readProgressLabel'
+import { readPalette } from '../features/palette/read/readPalette'
+import type { ReadResult } from '../features/palette/read/readPalette'
+import {
+  ReadCancelledError,
+  createReadController,
+} from '../features/palette/read/readProgress'
+import type {
+  ReadController,
+  ReadProgress,
+} from '../features/palette/read/readProgress'
 import { useImageBlob, useImageUrl } from '../features/palette/useImageUrl'
 import { deleteEntry, getEntry, subscribe, updateEntry } from '../lib/db'
 import { PLATFORM_LABEL } from '../lib/platform'
@@ -45,6 +55,22 @@ function readFocusHeading(state: unknown): boolean {
   return (state as { focusHeading?: unknown }).focusHeading === true
 }
 
+function readPendingRead(state: unknown): ReadResult | null {
+  if (!state || typeof state !== 'object') return null
+
+  const { pendingRead } = state as { pendingRead?: unknown }
+  if (!pendingRead || typeof pendingRead !== 'object') return null
+
+  return pendingRead as ReadResult
+}
+
+/** Everything Save (or a first extract) hands over, held outside the history. */
+interface Handoff {
+  notice: string | null
+  focusHeading: boolean
+  pendingRead: ReadResult | null
+}
+
 function EntryView({ entry }: { entry: Entry }) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -57,9 +83,19 @@ function EntryView({ entry }: { entry: Entry }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [extractError, setExtractError] = useState<string>()
   const [extracting, setExtracting] = useState(false)
+  const [readPhase, setReadPhase] = useState<ReadProgress | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string>()
   const headingRef = useRef<HTMLHeadingElement>(null)
+  const readControllerRef = useRef<ReadController | null>(null)
+  // Router state is read exactly once, on mount, and then erased from history:
+  // a `pendingRead` that survived Back or a reload would offer an Apply that
+  // silently overwrites everything edited since.
+  const [handoff, setHandoff] = useState<Handoff>(() => ({
+    notice: readNotice(location.state),
+    focusHeading: readFocusHeading(location.state),
+    pendingRead: readPendingRead(location.state),
+  }))
 
   const sourceId = entry.sourceImageId ?? entry.images[0]?.id
   const sourceBlob = useImageBlob(sourceId)
@@ -67,8 +103,8 @@ function EntryView({ entry }: { entry: Entry }) {
   const selectedBlob = useImageBlob(selectedId)
   const selectedUrl = useImageUrl(selectedId)
 
-  const notice = readNotice(location.state)
-  const focusHeading = readFocusHeading(location.state)
+  const { notice, focusHeading, pendingRead } = handoff
+  const hasRouterState = location.state !== null && location.state !== undefined
   const showMock = entry.kind === 'palette' || hasPalette(entry)
   const showDesignTools = entry.kind === 'design'
   // Once a design has colors the MockPanel owns every palette write, including
@@ -84,8 +120,16 @@ function EntryView({ entry }: { entry: Entry }) {
     headingRef.current?.focus()
   }, [entry.id, focusHeading])
 
-  function handleDismissNotice() {
+  // One replace clears the notice, the focus flag and the pending read together
+  // — they all now live in `handoff`.
+  useEffect(() => {
+    if (!hasRouterState) return
+
     void navigate(location.pathname, { replace: true, state: null })
+  }, [hasRouterState, location.pathname, navigate])
+
+  function handleDismissNotice() {
+    setHandoff((previous) => ({ ...previous, notice: null }))
   }
 
   function handleTagsChange(next: string[]) {
@@ -98,27 +142,42 @@ function EntryView({ entry }: { entry: Entry }) {
     queue({ note: next, updatedAt: Date.now() })
   }
 
+  // `MockPanel` is not mounted yet on a palette-less design, so the first read
+  // runs here and hands its result to the panel it is about to mount — the same
+  // hand-off Capture makes through router state, minus the router.
   async function handleExtract() {
     if (!selectedBlob) {
       setExtractError(EXTRACT_FAILURE)
       return
     }
 
+    const controller = createReadController()
+    readControllerRef.current = controller
     setExtracting(true)
+    setReadPhase({ phase: 'idle' })
+
     try {
-      const result = await extract(selectedBlob)
+      const result = await readPalette(selectedBlob, {
+        sourceImageId: selectedId,
+        onProgress: setReadPhase,
+        signal: controller.signal,
+      })
       await updateEntry(entry.id, {
         sourceImageId: selectedId,
         colors: result.colors,
         roleMap: result.roleMap,
         blockOverrides: {},
         mockTemplate: entry.mockTemplate ?? 'ecommerce',
+        paletteSource: result.source,
         updatedAt: Date.now(),
       })
       setExtractError(undefined)
-    } catch {
-      setExtractError(EXTRACT_FAILURE)
+      setHandoff((previous) => ({ ...previous, pendingRead: result }))
+    } catch (error) {
+      if (!(error instanceof ReadCancelledError)) setExtractError(EXTRACT_FAILURE)
     } finally {
+      readControllerRef.current = null
+      setReadPhase(null)
       setExtracting(false)
     }
   }
@@ -192,8 +251,17 @@ function EntryView({ entry }: { entry: Entry }) {
                 onClick={() => void handleExtract()}
                 disabled={extracting || !selectedBlob}
               >
-                Extract palette
+                {readPhase ? readProgressLabel(readPhase) : 'Extract palette'}
               </Button>
+              {readPhase && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => readControllerRef.current?.cancel()}
+                >
+                  Cancel read
+                </Button>
+              )}
               {extractError && (
                 <p role="alert" className="text-sm text-accent">
                   {extractError}
@@ -211,6 +279,10 @@ function EntryView({ entry }: { entry: Entry }) {
           sourceUrl={sourceUrl}
           selectedBlob={selectedBlob}
           selectedImageId={selectedId}
+          pendingRead={pendingRead}
+          onPendingReadConsumed={() =>
+            setHandoff((previous) => ({ ...previous, pendingRead: null }))
+          }
         />
       )}
 

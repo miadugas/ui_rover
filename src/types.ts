@@ -11,6 +11,15 @@ export type Platform = 'instagram' | 'threads'
 
 export type Kind = 'palette' | 'design'
 
+export type PaletteSource = 'ocr' | 'blobs' | 'quantize'
+
+export interface NormalizedRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
 export type Role =
   | 'background'
   | 'surface'
@@ -72,6 +81,8 @@ export interface Entry {
   blockOverrides?: Record<string, string>
   /** last picked template, default 'ecommerce' */
   mockTemplate?: MockTemplateId
+  paletteSource?: PaletteSource
+  crop?: { imageId: string } & NormalizedRect
   tags: string[]
   note: string
   createdAt: number

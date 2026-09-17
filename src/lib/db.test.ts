@@ -142,6 +142,25 @@ describe('IndexedDB persistence', () => {
     })
   })
 
+  it('drops an optional key instead of storing an undefined tombstone', async () => {
+    const fixture = createFixture(
+      'clear-crop',
+      'https://instagram.com/p/clear-crop',
+    )
+    await createEntry(fixture.entry, fixture.images)
+    await updateEntry(fixture.entry.id, {
+      crop: { imageId: 'clear-crop-image', x: 0.1, y: 0.1, w: 0.5, h: 0.5 },
+    })
+
+    expect((await getEntry(fixture.entry.id))?.crop).toBeDefined()
+
+    await updateEntry(fixture.entry.id, { crop: undefined })
+
+    const stored = await getEntry(fixture.entry.id)
+    expect(stored).toBeDefined()
+    expect(Object.keys(stored as object)).not.toContain('crop')
+  })
+
   it('rolls back an import when a middle record fails', async () => {
     const existing = createFixture(
       'existing-import',
