@@ -22,7 +22,7 @@ Four defaults that look right and score 0/5 or worse:
 | full image → 2000px | 0/5 | 6 | 1179 |
 | padded auto-crop → 1200/1500/1900px | 0/5 | 0 | — |
 | right-45%-column → 1000px (unpadded) | 4/5 | 0 | ~220 |
-| union: card@1200 + right-column@1000 | 5/5 | 0 | ~460 |
+| union: card@1200 + right-column@1000 | 4/5 exact (+1 repaired) | 0 | ~460 |
 
 ## The cascade
 

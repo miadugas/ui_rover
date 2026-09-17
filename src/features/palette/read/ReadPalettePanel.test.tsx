@@ -115,10 +115,12 @@ describe('ReadPalettePanel reading state', () => {
 })
 
 describe('ReadPalettePanel review state', () => {
-  it('summarises an OCR read and checks its unrepaired candidates', () => {
+  it('summarises an OCR read, counting repairs separately, and checks its unrepaired candidates', () => {
     renderPanel({ result: OCR_RESULT })
 
-    expect(screen.getByText('Read 4 hex codes from the card')).toBeInTheDocument()
+    expect(
+      screen.getByText('Read 3 hex codes from the card (+1 uncertain)'),
+    ).toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: /#101828/ })).toBeChecked()
     expect(screen.getByRole('checkbox', { name: /#475467/ })).toBeChecked()
     expect(screen.getByRole('checkbox', { name: /#d0d5dd/ })).not.toBeChecked()
@@ -127,6 +129,66 @@ describe('ReadPalettePanel review state', () => {
     expect(screen.getAllByText('OCR')).toHaveLength(4)
     expect(screen.getByText('BLOB')).toBeInTheDocument()
     expect(screen.getByText('96%')).toBeInTheDocument()
+  })
+
+  it('drops the uncertain suffix once nothing was repaired, and singularizes one hex code', () => {
+    const { rerender } = render(
+      <ReadPalettePanel
+        result={{
+          ...OCR_RESULT,
+          candidates: OCR_RESULT.candidates.filter(
+            (candidate) => !candidate.repaired,
+          ),
+        }}
+        phase={null}
+        error={null}
+        hasCrop={false}
+        onRead={vi.fn()}
+        onCancelRead={vi.fn()}
+        onOpenCrop={vi.fn()}
+        onApply={vi.fn()}
+        onKeepAutoCrop={vi.fn()}
+        onDismiss={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Read 3 hex codes from the card')).toBeInTheDocument()
+
+    rerender(
+      <ReadPalettePanel
+        result={{
+          ...OCR_RESULT,
+          candidates: [{ hex: '#101828', source: 'ocr', confidence: 96 }],
+        }}
+        phase={null}
+        error={null}
+        hasCrop={false}
+        onRead={vi.fn()}
+        onCancelRead={vi.fn()}
+        onOpenCrop={vi.fn()}
+        onApply={vi.fn()}
+        onKeepAutoCrop={vi.fn()}
+        onDismiss={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Read 1 hex code from the card')).toBeInTheDocument()
+  })
+
+  it('describes Apply and Append with their own, distinct hints', () => {
+    renderPanel({ result: OCR_RESULT })
+
+    const apply = screen.getByRole('button', { name: 'Apply (replace)' })
+    const append = screen.getByRole('button', { name: 'Append' })
+
+    expect(
+      screen.getByText('replaces the palette, re-assigns roles, clears overrides'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('adds swatches, keeps roles')).toBeInTheDocument()
+
+    expect(apply.getAttribute('aria-describedby')).not.toBe(
+      append.getAttribute('aria-describedby'),
+    )
   })
 
   it('applies the checked hexes in replace mode', () => {
@@ -219,7 +281,7 @@ describe('ReadPalettePanel review state', () => {
     cleanup()
     renderPanel({ result: { ...OCR_RESULT, ocrUnavailable: true } })
     expect(
-      screen.getByText('Read 4 hex codes from the card'),
+      screen.getByText('Read 3 hex codes from the card (+1 uncertain)'),
     ).toBeInTheDocument()
   })
 

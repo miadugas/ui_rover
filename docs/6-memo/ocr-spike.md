@@ -160,4 +160,4 @@ Three things changed the pipeline:
 
 Passes live in `OCR_PASSES` (`src/features/palette/read/ocrConfig.ts`); `OCR_SECOND_PASS_WIDTH` is removed. Note that `cropToBlob` floors its output at `OCR_CROP_WIDTH`, so the 1000 px pass must pass `minWidth` alongside `targetWidth` or it is silently upscaled back to 1200.
 
-**Known miss:** `#D0D5DD` is still not read on this fixture — it comes back as `#D0DsSDD`, which is too long to repair and is correctly dropped rather than guessed at. The shipped result on this fixture is 4/5 exact, 0 false positives.
+**Known miss:** `#D0D5DD` is not read exactly on this fixture — it comes back as `#D0DsSDD`; the shipped pipeline surfaces it only as an unchecked **repaired** candidate in the review panel (4 exact + 1 repaired = the "5 codes" the UI reports as "4 (+1 uncertain)"). The shipped result on this fixture is 4/5 exact, 0 false positives.

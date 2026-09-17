@@ -21,13 +21,13 @@ High-level: static SPA (HashRouter) → browser-only processing (Canvas for pale
 | --- | --- | --- |
 | Runtime | Node (nvm) | 24.14.1 |
 | Build | Vite | 8.3.0 |
-| UI | React | 19.2.8 |
+| UI | React | 19.3.0 |
 | Language | TypeScript (strict, `erasableSyntaxOnly`, `verbatimModuleSyntax`) | ~6.0.2 |
 | Routing | react-router (`HashRouter`) | 8.4.0 |
 | Styling | Tailwind CSS v4 via `@tailwindcss/vite` | 4.3.3 |
 | Storage | IndexedDB via `idb`, in-memory `Map` fallback | idb 8.0.3 |
 | IDs | `ulid` | 3.0.2 |
-| Lint | oxlint (react, typescript, oxc plugins) | 1.81.0 |
+| Lint | oxlint (react, typescript, oxc plugins) | 1.83.0 |
 | Tests | Vitest + jsdom + Testing Library + fake-indexeddb | vitest 5.0.1, jsdom 29.1.1, @testing-library/react 16.3.3, @testing-library/jest-dom 7.0.1, @testing-library/user-event 14.6.7, fake-indexeddb 6.2.5 |
 | OCR | tesseract.js (+ `tesseract.js-core`) + `@tesseract.js-data/eng` | tesseract.js 7.0.0, tesseract.js-core 7.0.0, @tesseract.js-data/eng 1.0.0 |
 
@@ -325,25 +325,35 @@ sequenceDiagram
 - Delete failure → entry and confirm UI stay, inline alert, navigation only on success.
 - Import rejection → `validateExportFile` reports the first offending JSON path; nothing is written.
 - Import collisions → `importMerge` skips id/url collisions and reports "N imported, M skipped".
+- OCR assets missing (`predev`/`prebuild` never ran) → `getWorker` rejects, `ocrHexCodes` throws `OcrUnavailableError`, the orchestrator sets `ocrUnavailable: true` and falls through to blobs/quantize — the review panel's summary says "OCR unavailable" rather than presenting a blank palette.
+- Read cancelled mid-way → orchestrator and worker reject with `ReadCancelledError`; Capture falls back to quantize `extract()` so Save still produces an entry, `MockPanel`/`EntryPage` leave the palette untouched (nothing queued, nothing written).
+- No crop and no card-like blob (nothing ≥1.5% area, non-edge) → `autoCropFrom` returns nothing, OCR is skipped entirely, and the read falls through to blobs/quantize.
+- Degraded or no-text read → `ReadPalettePanel`'s summary line: "Read N hex codes from the card" (ocr), "No hex text found — using swatch shapes" (blobs, no OCR unavailability), "OCR unavailable — using swatch shapes" / "…using quantized colors" (engine down), "Using quantized colors" (plain fallback).
+- Crop save failure (`saveCrop` in `MockPanel`) → the optimistic rect reverts to the last known-persisted `crop`, with a "Couldn't save the crop — Retry" alert re-attempting the same write (including a retryable `null` for a failed Clear).
+- Stale crop (`crop.imageId !== sourceImageId`) → silently ignored by `readPalette`; the next crop drawn simply overwrites it. Nobody clears it proactively.
 
 ## 16. Testing Strategy
 
-Vitest + jsdom + Testing Library + fake-indexeddb; see `docs/4-unit-tests/TESTING.md` for the day-to-day guide. Highlights: `globals: false` (explicit imports, `afterEach(cleanup)`), synthetic pixel buffers instead of PNG fixtures (jsdom has no Canvas), jsdom capability stubs in `src/test/setup.ts` (`createImageBitmap`, object-URL registry, opt-in 2D canvas context via `installCanvas2dStub`), fake-timer tests for the debounce/persistence race conditions in `useDebouncedPatch` and `MockPanel`. Canvas-bound code (`downsample`, `samplePixel`, `imageMeta.makeThumb`) is covered by the manual browser check, not unit tests. No E2E.
+Vitest + jsdom + Testing Library + fake-indexeddb; see `docs/4-unit-tests/TESTING.md` for the day-to-day guide. Highlights: `globals: false` (explicit imports, `afterEach(cleanup)`), synthetic pixel buffers instead of PNG fixtures (jsdom has no Canvas), jsdom capability stubs in `src/test/setup.ts` (`createImageBitmap`, object-URL registry, opt-in 2D canvas context via `installCanvas2dStub`), fake-timer tests for the debounce/persistence race conditions in `useDebouncedPatch` and `MockPanel`. Canvas-bound code (`downsample`, `samplePixel`, `imageMeta.makeThumb`, `cropToBlob`) is covered by the manual browser check, not unit tests. No E2E.
 
-Current counts (`npx vitest run`, 2026-09-16): **29 test files, 184 tests, all passing.**
+The read pipeline follows the same pure-vs-Canvas/worker split: `hexTokens`, `swatchBlobs`, `blobSpace`, `cropRect` are pure and directly unit-tested with synthetic word/pixel-buffer inputs; `ocrWorker` mocks `tesseract.js`'s `createWorker` (`vi.mock('tesseract.js', ...)`, keeping the real `OEM`/`PSM` exports via `importOriginal`) to test the lazy-singleton lifecycle, idle teardown, and abort races under `vi.useFakeTimers()`; `readPalette.test.ts` mocks `downsample`, `extract`, `cropToBlob`/`downscaleForOcr`, `ocrHexCodes`, and `detectSwatchBlobs` to test orchestration in isolation (auto-crop selection, the two-pass union and its early stop, the ocr→blobs→quantize fallthrough, cancellation). `cropToBlob`/`downscaleForOcr` themselves are Canvas-bound and manual-only, like `downsample`.
+
+Current counts (`npx vitest run`, 2026-09-16): **38 test files, 311 tests, all passing.**
 
 ## 17. Performance Considerations
 
 Thumbs (≤320px) are generated at capture time, not at render time. The library grid reads a thumb only once its `EntryCard` has entered the viewport (`IntersectionObserver` via `useThumbUrl`), so a large library never materializes every blob on mount. Object URLs are created and revoked inside the same effect everywhere they're used (`useImageUrl`, `useThumbUrl`, `useImageIntake`) so React 19 StrictMode's double-invoke can't leak one. Palettes are computed once at extraction and stored, not recomputed on render. Edits to note/tags/palette go through `useDebouncedPatch` (300 ms merge) rather than writing on every keystroke.
 
+The read pipeline adds its own costs, all one-time or bounded: the Tesseract worker singleton (§12) costs ~1–3 s and ~50 MB on first creation (engine load — browser wasm fetch + gunzip of the traineddata, slower than the Node spike numbers) and is torn down after 60 s idle. Each OCR pass costs ~200–450 ms warm. Assets are ≈15 MB on disk (`public/ocr/`: worker ≈0.1 MB, three LSTM-only wasm core builds ≈3.9 MB each, `eng.traineddata.gz` ≈2.95 MB) but a browser fetches only the one core build it feature-detects plus the language data, ≈7 MB, same-origin, once per session (`cacheMethod: 'none'` means the HTTP cache is the only cache — no second IndexedDB). Blob detection runs twice per read on a ≤240px buffer (well under 20 ms each); crop/quantize upscaling is capped at 2000px.
+
 ## 18. Security Considerations
 
-Single-user, local-only. No remote requests. Pasted images never leave the browser. External links (`EntryPage`'s "Open original post") open with `target="_blank" rel="noopener noreferrer"`.
+Single-user, local-only. No remote requests. Pasted images never leave the browser. External links (`EntryPage`'s "Open original post") open with `target="_blank" rel="noopener noreferrer"`. OCR runs entirely in a same-origin Web Worker against assets bundled at build time (§3, §6) — no CDN fetch, ever (verified manually with DevTools Network filtered to `ocr/`, §16/TESTING.md). `cacheMethod: 'none'` keeps the app's `ui-rover` IndexedDB database the only persistent store; Tesseract does not create a second one.
 
 ## 19. Deployment
 
-`HashRouter` means `npm run build` → `dist/` deploys to **any** static host (GitHub Pages, S3, a plain file server) with zero rewrite/redirect configuration — deep links like `#/entry/01H…` and reloads both just work, because the router never touches the actual request path. `npm run preview` serves the production build locally. No CI yet.
+`HashRouter` means `npm run build` → `dist/` deploys to **any** static host (GitHub Pages, S3, a plain file server) with zero rewrite/redirect configuration — deep links like `#/entry/01H…` and reloads both just work, because the router never touches the actual request path. `dist/` now includes `dist/ocr/` (≈15 MB, copied from `public/ocr/` by the Vite build like any other `public/` asset) — still a static bundle, no server-side requirement added. `npm run preview` serves the production build locally. No CI yet.
 
 ## 20. Conclusion
 
-Key decisions as built: client-only with screenshot-as-source (no Meta API), IndexedDB (`idb`) + JSON export/import v1 as the only backup path, `HashRouter` for zero-rewrite static hosting, feature folders with `lib/` for pure helpers, Tailwind v4 tokens in CSS, a data-driven wireframe-mock spec (11 templates) with role-level-by-default + per-block-override touchpoints, single-owner persistence per field group with debounced autosave (flush/retry/discard), and synthetic-buffer unit tests around a Canvas-bound pipeline verified manually in the browser.
+Key decisions as built: client-only with screenshot-as-source (no Meta API), IndexedDB (`idb`) + JSON export/import v1 as the only backup path, `HashRouter` for zero-rewrite static hosting, feature folders with `lib/` for pure helpers, Tailwind v4 tokens in CSS, a data-driven wireframe-mock spec (11 templates) with role-level-by-default + per-block-override touchpoints, single-owner persistence per field group with debounced autosave (flush/retry/discard), and synthetic-buffer unit tests around a Canvas-bound pipeline verified manually in the browser. v0.2.0 adds a **measured** OCR-first read strategy (printed hex codes → swatch-blob shapes → quantize, in that priority because exactness beats guessing beats "something is always there"), bundled same-origin Tesseract.js assets with no CDN and no second database, a Mia-drawn or auto-detected crop stored per entry, and a review-before-trust checklist step even when a read applies immediately on save — because a plausible-looking OCR misread is worse than one extra click.

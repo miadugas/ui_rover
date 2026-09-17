@@ -29,6 +29,13 @@ npm run build            # tsc -b && vite build
 - One persistence owner per field group: palette fields (`colors`/`roleMap`/`blockOverrides`) are written only by `MockPanel`; `tags`/`note` only by `EntryPage`; `mockTemplate` writes immediately (not debounced).
 - Never bypass `useDebouncedPatch` for palette, tag, or note edits — it's the one place that handles the 300ms merge, flush-on-blur/unmount/hidden, failed-write retention, and the `discard()` generation counter that stops a stale in-flight write from clobbering a replacement (e.g. re-extraction).
 
+## OCR / read pipeline rules
+
+- `public/ocr/` and `public/ocr-spike/` are generated (by `scripts/copy-ocr-assets.mjs` via `predev`/`prebuild`, and by the one-off spike harness respectively) — never commit either; both are gitignored.
+- OCR configuration (engine, PSM, whitelist, crop width, pass geometry in `src/features/palette/read/ocrConfig.ts`) comes from the measurement in `docs/6-memo/ocr-spike.md`. Change those values only with a new measurement against the fixture (or a better one) — never by assumption.
+- Tesseract is mocked in tests (`vi.mock('tesseract.js', ...)`, keeping the real `OEM`/`PSM` exports via `importOriginal`). Never let a test hit the real engine or fetch real assets.
+- The read pipeline lives in `src/features/palette/read/`, split like the rest of `palette/`: pure detectors (`hexTokens`, `swatchBlobs`, `blobSpace`, `cropRect`) are unit-tested directly; Canvas/worker-bound pieces (`cropToBlob`, `ocrWorker`) are covered by the manual browser check only.
+
 ## Styling rules
 
 - Tailwind v4 utilities + `@theme` tokens in `src/index.css` only — no inline hex, no JS-side Tailwind config, no ad hoc CSS files.

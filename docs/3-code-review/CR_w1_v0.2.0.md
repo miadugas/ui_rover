@@ -82,4 +82,24 @@ None.
 
 **APPROVED**
 
-All code findings from the three-round review were resolved. Final supplied verification was clean: lint with zero warnings, TypeScript project-reference checking, 309 passing tests, production build, and a browser check confirming 5/5 Dopely codes were read, applied, persisted, and retained after reload. Focus restoration was also manually verified. Documentation synchronization remains an explicitly accepted TRIP-3 follow-up.
+All code findings from the three-round review were resolved. Final supplied verification was clean: lint with zero warnings, TypeScript project-reference checking, 311 passing tests, production build, and a browser check on the dopely fixture (4 codes exact, `#d0d5dd` as a repaired candidate) confirming 5/5 Dopely codes were read, applied, persisted, and retained after reload. Focus restoration was also manually verified. Documentation synchronization remains an explicitly accepted TRIP-3 follow-up.
+
+---
+
+## Release verification addendum (2026-09-16)
+
+**Sol (Codex) release verification — 4 Minor, all resolved before release:**
+1. Planned "crop first, with Skip crop" flow not built → recorded as an intentional divergence in the plan (§8): the auto-crop made a crop-first step a redundant click; a separate **Crop** button covers overrides.
+2. Manual gate under-evidenced → run and recorded below.
+3. Plan file/test inventories missing review-driven additions (`blobSpace.ts`, `readProgressLabel.ts`, `db.applyPatch`) → inventories updated in the plan.
+4. `package-lock.json` root version still `0.1.0` → regenerated (`npm install --package-lock-only`), now `0.2.0`.
+
+**Manual browser check (built-in Chromium pane, dev server, real fixture `docs/6-memo/fixtures/dopely-calm-saas.png`):**
+- Auto-crop read, no manual crop: "Read 5 hex codes from the card" — `#101828 #2f6bff #475467 #ffffff` exact, `#d0d5dd` offered as *repaired* (unchecked); Apply persists `paletteSource: 'ocr'`; reload keeps the palette; focus returns to *Read palette* after dismiss.
+- Manual crop: stored crop honored after reload (button reads *Edit crop*, no "detected card" line), 5 codes read.
+- Swatch-only synthetic card (no text): source `blobs`, five swatch colors + card white.
+- Cancel on the entry page during "Reading…": palette unchanged, panel back to idle, no review opened.
+- Cancel during save ("Cancel read" while "Detecting swatches…"): entry still created with the quantize palette (`paletteSource: 'quantize'`).
+- OCR assets served same-origin (`curl` 200 for `worker.min.js`, `tesseract-core-relaxedsimd-lstm.wasm.js`, `eng.traineddata.gz`); worker-initiated fetches are not visible in the pane's network log, so same-origin is asserted by `ocrConfig.test.ts` + curl rather than by observation.
+- **Not run:** Firefox (no Firefox available to the agent) — Mia to verify the worker + wasm load once.
+- Observation (not a defect in an in-app path): a crop written to IndexedDB *outside* `MockPanel` while the entry page is open is not picked up live; `MockPanel` is the single writer in-app, and reload seeds correctly.

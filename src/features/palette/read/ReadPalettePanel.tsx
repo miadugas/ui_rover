@@ -49,11 +49,18 @@ const READ_BUTTON_ID = 'read-palette-button'
  */
 function summaryFor({ source, candidates, ocrUnavailable }: ReadResult): string {
   if (source === 'ocr') {
-    const codes = candidates.filter(
+    const ocrCandidates = candidates.filter(
       (candidate) => candidate.source === 'ocr',
+    )
+    const unrepaired = ocrCandidates.filter(
+      (candidate) => !candidate.repaired,
     ).length
+    const repaired = ocrCandidates.length - unrepaired
 
-    return `Read ${codes} hex codes from the card`
+    const noun = unrepaired === 1 ? 'hex code' : 'hex codes'
+    const suffix = repaired > 0 ? ` (+${repaired} uncertain)` : ''
+
+    return `Read ${unrepaired} ${noun} from the card${suffix}`
   }
 
   if (source === 'blobs') {
@@ -254,23 +261,29 @@ export function ReadPalettePanel({
           size="sm"
           disabled={pickedHexes.length === 0}
           onClick={() => onApply(pickedHexes, 'replace')}
+          aria-describedby="apply-hint"
         >
           Apply (replace)
         </Button>
+        <span id="apply-hint" className="label-mono text-chrome-500">
+          replaces the palette, re-assigns roles, clears overrides
+        </span>
         <Button
           size="sm"
           variant="secondary"
           disabled={pickedHexes.length === 0}
           onClick={() => onApply(pickedHexes, 'append')}
+          aria-describedby="append-hint"
         >
           Append
         </Button>
+        <span id="append-hint" className="label-mono text-chrome-500">
+          adds swatches, keeps roles
+        </span>
         <Button size="sm" variant="ghost" onClick={onDismiss}>
           Cancel
         </Button>
       </div>
-
-      <p className="label-mono text-chrome-500">adds swatches, keeps roles</p>
     </section>
   )
 }
