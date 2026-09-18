@@ -9,7 +9,25 @@
 
 export type Platform = 'instagram' | 'threads'
 
-export type Kind = 'palette' | 'design'
+export type Kind = 'palette' | 'design' | 'component'
+
+export type CaptureKind = Exclude<Kind, 'component'>
+
+export type ComponentTag =
+  | 'button'
+  | 'nav'
+  | 'card'
+  | 'form'
+  | 'input'
+  | 'list'
+  | 'modal'
+  | 'table'
+  | 'hero'
+  | 'footer'
+  | 'typography'
+  | 'icon'
+  | 'chart'
+  | 'other'
 
 export type PaletteSource = 'ocr' | 'blobs' | 'quantize'
 
@@ -63,16 +81,20 @@ export interface Entry {
   /** ulid */
   id: string
   /** normalized (lib/url.ts) */
-  url: string
-  platform: Platform
+  url?: string
+  platform?: Platform
   /** from Threads URL / IG user path when present */
   author?: string
-  shortcode: string
+  shortcode?: string
   kind: Kind
   /** ordered; blobs live in the `images` store */
   images: ImageRef[]
   /** which image the palette came from */
   sourceImageId?: string
+  parentId?: string
+  parentImageId?: string
+  sourceRect?: NormalizedRect
+  componentTags?: ComponentTag[]
   /** hex[], present for palette entries and for designs after "Extract palette" */
   colors?: string[]
   /** present whenever colors is */
@@ -135,4 +157,21 @@ export const MOCK_TEMPLATE_IDS: readonly MockTemplateId[] = [
   'saas-landing',
   'documentation',
   'components',
+]
+
+export const COMPONENT_TAGS: readonly ComponentTag[] = [
+  'button',
+  'nav',
+  'card',
+  'form',
+  'input',
+  'list',
+  'modal',
+  'table',
+  'hero',
+  'footer',
+  'typography',
+  'icon',
+  'chart',
+  'other',
 ]

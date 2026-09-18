@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Entry, Kind, Platform } from '../../types'
-import { EMPTY_FILTERS, applyFilters } from './filters'
+import { EMPTY_FILTERS, applyFilters, hasComponents } from './filters'
 import type { LibraryFilters } from './filters'
 
 function makeEntry(overrides: Partial<Entry> & { id: string }): Entry {
@@ -48,7 +48,45 @@ const DESIGN_IG = makeEntry({
   note: 'Type specimen',
 })
 
+const DESIGN_NO_URL = makeEntry({
+  id: 'd',
+  kind: 'design',
+  url: undefined,
+  platform: undefined,
+  shortcode: undefined,
+  tags: ['grid'],
+  note: 'Screenshot with no post behind it',
+})
+
+const COMPONENT_BUTTON = makeEntry({
+  id: 'e',
+  kind: 'component',
+  url: undefined,
+  platform: undefined,
+  shortcode: undefined,
+  parentId: 'b',
+  componentTags: ['button'],
+  tags: [],
+  note: 'Save for later button',
+})
+
+const COMPONENT_NAV = makeEntry({
+  id: 'f',
+  kind: 'component',
+  url: undefined,
+  platform: undefined,
+  shortcode: undefined,
+  parentId: 'b',
+  componentTags: ['nav'],
+  tags: [],
+  note: 'Top nav',
+})
+
 const ALL_ENTRIES = [PALETTE_IG, DESIGN_TH, DESIGN_IG]
+
+const WITH_URL_LESS = [...ALL_ENTRIES, DESIGN_NO_URL]
+
+const WITH_COMPONENTS = [...ALL_ENTRIES, COMPONENT_BUTTON, COMPONENT_NAV]
 
 function ids(entries: Entry[]): string[] {
   return entries.map((entry) => entry.id)
@@ -112,9 +150,70 @@ describe('applyFilters', () => {
     ).toEqual(['c'])
   })
 
+  it('keeps a URL-less entry under platform "All"', () => {
+    expect(ids(applyFilters(WITH_URL_LESS, EMPTY_FILTERS))).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+    ])
+  })
+
+  it('never matches a URL-less entry against a named platform', () => {
+    expect(
+      ids(applyFilters(WITH_URL_LESS, withFilters({ platform: 'instagram' }))),
+    ).toEqual(['a', 'c'])
+    expect(
+      ids(applyFilters(WITH_URL_LESS, withFilters({ platform: 'threads' }))),
+    ).toEqual(['b'])
+  })
+
+  it('still searches a URL-less entry by note and tag', () => {
+    expect(
+      ids(applyFilters(WITH_URL_LESS, withFilters({ search: 'no post behind' }))),
+    ).toEqual(['d'])
+    expect(ids(applyFilters(WITH_URL_LESS, withFilters({ tags: ['grid'] })))).toEqual(
+      ['b', 'd'],
+    )
+  })
+
   it('returns nothing when no entry matches', () => {
     expect(applyFilters(ALL_ENTRIES, withFilters({ search: 'nonexistent' }))).toEqual(
       [],
     )
+  })
+
+  it('filters by kind component', () => {
+    expect(
+      ids(applyFilters(WITH_COMPONENTS, withFilters({ kind: 'component' }))),
+    ).toEqual(['e', 'f'])
+  })
+
+  it('filters by componentTag, keeping only components with that tag', () => {
+    expect(
+      ids(applyFilters(WITH_COMPONENTS, withFilters({ componentTag: 'button' }))),
+    ).toEqual(['e'])
+  })
+
+  it('never matches a non-component against a specific componentTag', () => {
+    expect(
+      ids(applyFilters(ALL_ENTRIES, withFilters({ componentTag: 'button' }))),
+    ).toEqual([])
+  })
+
+  it('searches a component tag label', () => {
+    expect(ids(applyFilters(WITH_COMPONENTS, withFilters({ search: 'button' })))).toEqual(
+      ['e'],
+    )
+  })
+})
+
+describe('hasComponents', () => {
+  it('is false when no entry is a component', () => {
+    expect(hasComponents(ALL_ENTRIES)).toBe(false)
+  })
+
+  it('is true when at least one entry is a component', () => {
+    expect(hasComponents(WITH_COMPONENTS)).toBe(true)
   })
 })

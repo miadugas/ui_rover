@@ -2,11 +2,11 @@ import { useState } from 'react'
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { Kind } from '../../types'
+import type { CaptureKind } from '../../types'
 import { KindToggle } from './KindToggle'
 
 function Harness() {
-  const [kind, setKind] = useState<Kind>('palette')
+  const [kind, setKind] = useState<CaptureKind>('palette')
   return <KindToggle value={kind} onChange={setKind} />
 }
 

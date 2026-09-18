@@ -42,13 +42,19 @@ export function useImageUrl(imageId: string | undefined): string | null {
   return loaded?.imageId === imageId ? loaded.url : null
 }
 
-interface LoadedBlob {
-  imageId: string
-  blob: Blob
+export type ImageBlobStatus = 'loading' | 'ready' | 'missing'
+
+export interface ImageBlobState {
+  blob: Blob | null
+  status: ImageBlobStatus
 }
 
-/** The stored Blob itself — needed by `extract` and `samplePixel`. */
-export function useImageBlob(imageId: string | undefined): Blob | null {
+interface LoadedBlob extends ImageBlobState {
+  imageId: string
+  status: 'ready' | 'missing'
+}
+
+export function useImageBlobState(imageId: string | undefined): ImageBlobState {
   const [loaded, setLoaded] = useState<LoadedBlob | null>(null)
 
   useEffect(() => {
@@ -58,16 +64,28 @@ export function useImageBlob(imageId: string | undefined): Blob | null {
 
     void getImageBlob(imageId)
       .then((blob) => {
-        if (cancelled || !blob) return
-        setLoaded({ imageId, blob })
+        if (cancelled) return
+        setLoaded(
+          blob
+            ? { imageId, blob, status: 'ready' }
+            : { imageId, blob: null, status: 'missing' },
+        )
       })
-      .catch(() => undefined)
+      .catch(() => {
+        if (!cancelled) setLoaded({ imageId, blob: null, status: 'missing' })
+      })
 
     return () => {
       cancelled = true
     }
   }, [imageId])
 
-  if (!imageId) return null
-  return loaded?.imageId === imageId ? loaded.blob : null
+  if (!imageId) return { blob: null, status: 'missing' }
+  if (loaded?.imageId !== imageId) return { blob: null, status: 'loading' }
+  return { blob: loaded.blob, status: loaded.status }
+}
+
+/** The stored Blob itself — needed by `extract` and `samplePixel`. */
+export function useImageBlob(imageId: string | undefined): Blob | null {
+  return useImageBlobState(imageId).blob
 }

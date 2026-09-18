@@ -2,11 +2,18 @@
 
 | Version | Week | Commit Message                  |
 | ------- | ---- | -------------------------------- |
+| `0.3.0` | 1    | feat: component capture with provenance, optional post URL, schema v2 |
 | `0.2.0` | 1    | feat: read the palette — OCR hex codes, crop tool, swatch-blob fallback, review panel |
 | `0.1.0` | 1    | feat: MVP capture, palette wireframe mock with touchpoints, library, IndexedDB + JSON backup |
 | `0.0.1` | 1    | chore: initialize TRIP workflow |
 
 # Changelog Summary
+
+- **v0.3.0 (Component capture - Week 1, 17-09-2026)**:
+  - **Feature**: capture UI components out of design screenshots as first-class entries with provenance (own WebP crop, fixed chips + free tags, parent link, palette read); post URL optional; library Component filters; parent-page strip
+  - **Data**: IndexedDB schema v2 (`by-parent`, version-aware upgrade, fallback reason), one-level cascade delete, two-pass import resolution with orphan count
+  - **Review**: Codex 2 rounds → APPROVED; Sol release verification + Opus final review recorded in the CR
+  - **Files Added**: src/features/components/**, src/components/chipStyles.ts, docs/2-changelog/w1_v0.3.0.md, docs/3-code-review/CR_w1_v0.3.0.md, docs/5-tuto/tuto_0.3.0.md
 
 - **v0.2.0 (Read the palette - Week 1, 16-09-2026)**:
   - **Feature**: OCR of printed hex codes (bundled Tesseract.js, same-origin), auto-crop from swatch blobs, manual crop tool, swatch-blob fallback, review panel with replace/append; measured 5/5 on the real dopely post

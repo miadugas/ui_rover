@@ -1,14 +1,14 @@
 import { Link } from 'react-router'
 import { Badge } from '../components/Badge'
 import { CaptureCard } from '../features/capture/CaptureCard'
-import { PLATFORM_LABEL } from '../lib/platform'
+import { PLATFORM_LABEL, entryTitle } from '../lib/platform'
 import { useLibrary } from '../lib/useLibrary'
 import type { Entry } from '../types'
 
 const RECENT_LIMIT = 4
 const RECENT_SWATCH_LIMIT = 6
 
-function RecentEntry({ entry }: { entry: Entry }) {
+function RecentEntry({ entry, parent }: { entry: Entry; parent?: Entry }) {
   const swatches = entry.colors?.slice(0, RECENT_SWATCH_LIMIT) ?? []
 
   return (
@@ -17,8 +17,11 @@ function RecentEntry({ entry }: { entry: Entry }) {
         to={`/entry/${entry.id}`}
         className="flex items-center gap-2 rounded-block border border-chrome-200 px-2 py-1.5 hover:bg-chrome-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
       >
-        <Badge>{PLATFORM_LABEL[entry.platform]}</Badge>
+        {entry.platform && <Badge>{PLATFORM_LABEL[entry.platform]}</Badge>}
         <Badge tone="accent">{entry.kind}</Badge>
+        <span className="label-mono text-chrome-700">
+          {entryTitle(entry, parent)}
+        </span>
         {swatches.length > 0 && (
           <span className="flex items-center gap-0.5">
             {swatches.map((hex) => (
@@ -39,6 +42,11 @@ function RecentEntry({ entry }: { entry: Entry }) {
 export function LandingPage() {
   const { entries } = useLibrary()
   const recent = entries.slice(0, RECENT_LIMIT)
+  const parentsById = new Map(
+    entries
+      .filter((entry) => entry.kind !== 'component')
+      .map((entry) => [entry.id, entry] as const),
+  )
 
   return (
     <div className="flex flex-col gap-8">
@@ -63,7 +71,11 @@ export function LandingPage() {
           </h2>
           <ul className="flex flex-wrap gap-2">
             {recent.map((entry) => (
-              <RecentEntry key={entry.id} entry={entry} />
+              <RecentEntry
+                key={entry.id}
+                entry={entry}
+                parent={entry.parentId ? parentsById.get(entry.parentId) : undefined}
+              />
             ))}
           </ul>
         </section>

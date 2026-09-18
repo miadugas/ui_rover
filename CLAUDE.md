@@ -4,7 +4,7 @@ Client-only React 19 + Vite + TypeScript SPA (Tailwind v4, `HashRouter`, Indexed
 
 ## Hard constraint
 
-No Meta/Instagram/Threads API and no scraping, ever. The post URL is only a bookmark key; the pasted/dropped screenshot is the only source of data. Any feature that needs a fetch to Instagram/Threads/Meta is out of scope — propose the screenshot-based alternative instead.
+No Meta/Instagram/Threads API and no scraping, ever. The post URL is an optional bookmark and dedupe key — **the entry id is the identity**; the pasted/dropped screenshot is the only source of data. Any feature that needs a fetch to Instagram/Threads/Meta is out of scope — propose the screenshot-based alternative instead.
 
 ## Gates (run before considering anything done)
 
@@ -17,16 +17,19 @@ npm run build            # tsc -b && vite build
 
 ## Folder conventions
 
-- Feature folders (`src/features/capture`, `src/features/palette`, `src/features/library`) own their components, hooks, and helpers.
+- Feature folders (`src/features/capture`, `src/features/palette`, `src/features/library`, `src/features/components`) own their components, hooks, and helpers. `features/components/` is component capture (crop helper, form, capture flow, parent strip).
 - `src/lib/` is for pure, testable helpers and persistence (`db.ts`, `url.ts`, `export.ts`) — no React.
-- `src/components/` holds shared UI primitives only (`Button`, `Badge`, `Field`, `Popover`).
+- `src/components/` holds shared UI primitives only (`Button`, `Badge`, `Field`, `Popover`, `chipStyles`).
 - Tests are co-located: `*.test.ts(x)` beside the unit under test. No `__fixtures__/`; palette/image tests use synthetic in-test pixel buffers (jsdom has no Canvas).
 - Vitest runs with `globals: false` — import `describe`/`it`/`expect`/`vi` explicitly in every test file.
 
 ## Persistence rules
 
 - Every store read/write goes through `src/lib/db.ts` — never touch `idb`/`indexedDB` directly from a component or feature file.
-- One persistence owner per field group: palette fields (`colors`/`roleMap`/`blockOverrides`) are written only by `MockPanel`; `tags`/`note` only by `EntryPage`; `mockTemplate` writes immediately (not debounced).
+- One persistence owner per field group: palette fields (`colors`/`roleMap`/`blockOverrides`/`paletteSource`/`crop`) are written only by `MockPanel`; `tags`/`note`/`componentTags` only by `EntryPage`; `mockTemplate` writes immediately (not debounced).
+- **Never overload `sourceImageId`** — it always names one of the entry's *own* images (the palette read reads and writes it). Provenance goes in `parentId` / `parentImageId` / `sourceRect`.
+- Components are one level deep (a component is never a parent); `deleteEntry` cascades children in one transaction; import resolves collisions first, then orphans.
+- Schema changes need a version-aware `upgrade(db, oldVersion)` and an upgrade test (build the old version with `openDB(name, n)` under fake-indexeddb, then call the module's `openDb()`).
 - Never bypass `useDebouncedPatch` for palette, tag, or note edits — it's the one place that handles the 300ms merge, flush-on-blur/unmount/hidden, failed-write retention, and the `discard()` generation counter that stops a stale in-flight write from clobbering a replacement (e.g. re-extraction).
 
 ## OCR / read pipeline rules
@@ -48,4 +51,4 @@ TRIP is the build workflow for this repo: plan in `docs/1-plans/`, architecture 
 
 ## Git
 
-Git is Mia's — never commit, stage, push, or nudge about git state. This repo currently has no `.git` — don't initialize one unless asked.
+Git is Mia's — never commit, stage, push, or nudge about git state. The repo lives at github.com/miadugas/ui_rover; Mia runs every git command.

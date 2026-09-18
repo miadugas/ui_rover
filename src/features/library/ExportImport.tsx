@@ -112,16 +112,18 @@ export function ExportImport() {
     setResult(null)
 
     try {
-      let outcome: { imported: number; skipped: number }
+      const outcome =
+        mode === 'merge'
+          ? await importMerge(importBatch)
+          : await importReplace(importBatch)
+      const orphanedResult =
+        outcome.orphaned > 0
+          ? `, ${outcome.orphaned} orphaned components`
+          : ''
 
-      if (mode === 'merge') {
-        outcome = await importMerge(importBatch)
-      } else {
-        await importReplace(importBatch)
-        outcome = { imported: importBatch.length, skipped: 0 }
-      }
-
-      setResult(`${outcome.imported} imported, ${outcome.skipped} skipped`)
+      setResult(
+        `${outcome.imported} imported, ${outcome.skipped} skipped${orphanedResult}`,
+      )
       setImportBatch(null)
       setConfirmReplace(false)
     } catch (error) {

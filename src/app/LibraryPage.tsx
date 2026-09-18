@@ -3,7 +3,7 @@ import { EmptyState } from '../features/library/EmptyState'
 import { EntryCard } from '../features/library/EntryCard'
 import { ExportImport } from '../features/library/ExportImport'
 import { FilterBar } from '../features/library/FilterBar'
-import { EMPTY_FILTERS, applyFilters } from '../features/library/filters'
+import { EMPTY_FILTERS, applyFilters, hasComponents } from '../features/library/filters'
 import type { LibraryFilters } from '../features/library/filters'
 import { useLibrary } from '../lib/useLibrary'
 
@@ -22,6 +22,16 @@ export function LibraryPage() {
 
   const allTags = useMemo(
     () => Array.from(new Set(entries.flatMap((entry) => entry.tags))),
+    [entries],
+  )
+
+  const parentsById = useMemo(
+    () =>
+      new Map(
+        entries
+          .filter((entry) => entry.kind !== 'component')
+          .map((entry) => [entry.id, entry] as const),
+      ),
     [entries],
   )
 
@@ -51,7 +61,12 @@ export function LibraryPage() {
         </div>
       ) : (
         <>
-          <FilterBar filters={filters} allTags={allTags} onChange={setFilters} />
+          <FilterBar
+            filters={filters}
+            allTags={allTags}
+            showComponentTags={hasComponents(entries)}
+            onChange={setFilters}
+          />
 
           {entries.length === 0 && <EmptyState variant="empty" />}
 
@@ -65,7 +80,13 @@ export function LibraryPage() {
           {visibleEntries.length > 0 && (
             <div className={GRID_CLASSES}>
               {visibleEntries.map((entry) => (
-                <EntryCard key={entry.id} entry={entry} />
+                <EntryCard
+                  key={entry.id}
+                  entry={entry}
+                  parent={
+                    entry.parentId ? parentsById.get(entry.parentId) : undefined
+                  }
+                />
               ))}
             </div>
           )}

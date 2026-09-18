@@ -12,7 +12,7 @@ import type { ReadController, ReadProgress } from '../palette/read/readProgress'
 import type {
   Entry,
   ImageRecord,
-  Kind,
+  CaptureKind,
   PaletteSource,
   ParsedPostUrl,
   RoleMap,
@@ -61,7 +61,7 @@ export function CaptureCard() {
   const [url, setUrl] = useState('')
   const [parsed, setParsed] = useState<ParsedPostUrl | null>(null)
   const [duplicateId, setDuplicateId] = useState<string | null>(null)
-  const [kind, setKind] = useState<Kind>('palette')
+  const [kind, setKind] = useState<CaptureKind>('palette')
   const [sourceTempId, setSourceTempId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -77,10 +77,13 @@ export function CaptureCard() {
     if (intake.images.length > previousCount) trayHeadingRef.current?.focus()
   }, [intake.images.length])
 
-  const canSave = Boolean(parsed) && !duplicateId && intake.images.length > 0 && !saving
+  // A blank URL is a complete capture (a screenshot with no post behind it);
+  // typed-but-unparsable text is an unfinished one and still blocks Save.
+  const urlReady = url.trim().length === 0 || (Boolean(parsed) && !duplicateId)
+  const canSave = urlReady && intake.images.length > 0 && !saving
 
   const handleSave = async () => {
-    if (!parsed || !canSave) return
+    if (!canSave) return
 
     setSaving(true)
     setSaveError(null)
@@ -138,10 +141,14 @@ export function CaptureCard() {
     const now = Date.now()
     const entry: Entry = {
       id: entryId,
-      url: parsed.normalizedUrl,
-      platform: parsed.platform,
-      ...(parsed.author ? { author: parsed.author } : {}),
-      shortcode: parsed.shortcode,
+      ...(parsed
+        ? {
+            url: parsed.normalizedUrl,
+            platform: parsed.platform,
+            ...(parsed.author ? { author: parsed.author } : {}),
+            shortcode: parsed.shortcode,
+          }
+        : {}),
       kind: savedKind,
       images: records.map(({ id, order, width, height, mime }) => ({
         id,

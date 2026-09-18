@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FilterBar } from './FilterBar'
 import { EMPTY_FILTERS } from './filters'
@@ -77,5 +77,76 @@ describe('FilterBar', () => {
     })
 
     expect(onChange).toHaveBeenCalledWith(withFilters({ search: 'retro' }))
+  })
+
+  it('hides the component-type row by default and shows it when told to', () => {
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <FilterBar filters={EMPTY_FILTERS} allTags={[]} onChange={onChange} />,
+    )
+
+    expect(
+      screen.queryByRole('group', { name: 'Component type' }),
+    ).not.toBeInTheDocument()
+
+    rerender(
+      <FilterBar
+        filters={EMPTY_FILTERS}
+        allTags={[]}
+        showComponentTags
+        onChange={onChange}
+      />,
+    )
+
+    expect(screen.getByRole('group', { name: 'Component type' })).toBeInTheDocument()
+  })
+
+  it('presses the component-type chip and emits the filter', () => {
+    const onChange = vi.fn()
+    render(
+      <FilterBar
+        filters={EMPTY_FILTERS}
+        allTags={[]}
+        showComponentTags
+        onChange={onChange}
+      />,
+    )
+
+    const group = screen.getByRole('group', { name: 'Component type' })
+    fireEvent.click(within(group).getByRole('button', { name: 'Button' }))
+
+    expect(onChange).toHaveBeenCalledWith(withFilters({ componentTag: 'button' }))
+  })
+
+  it('resets to the "All" component-type chip when filters are cleared', () => {
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <FilterBar
+        filters={withFilters({ componentTag: 'button' })}
+        allTags={[]}
+        showComponentTags
+        onChange={onChange}
+      />,
+    )
+
+    const group = screen.getByRole('group', { name: 'Component type' })
+    expect(within(group).getByRole('button', { name: 'Button' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+
+    rerender(
+      <FilterBar
+        filters={EMPTY_FILTERS}
+        allTags={[]}
+        showComponentTags
+        onChange={onChange}
+      />,
+    )
+
+    expect(within(group).getByRole('button', { name: 'All' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
   })
 })

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Outlet } from 'react-router'
-import { isInMemory, openDb } from '../lib/db'
+import { openDb, storageFallbackReason } from '../lib/db'
+import type { StorageFallbackReason } from '../lib/db'
 
 const NAV_ITEMS = [
   { to: '/', label: 'Capture', end: true },
@@ -14,22 +15,28 @@ function navLinkClassName({ isActive }: { isActive: boolean }): string {
   ].join(' ')
 }
 
-export interface StorageBannerProps {
-  visible: boolean
+const STORAGE_BANNER_TEXT: Record<Exclude<StorageFallbackReason, 'none'>, string> = {
+  unavailable: 'Storage unavailable — this session is in-memory only.',
+  'upgrade-failed':
+    'Storage upgrade failed — this session is in-memory; your saved entries are intact but not loaded.',
 }
 
-export function StorageBanner({ visible }: StorageBannerProps) {
-  if (!visible) return null
+export interface StorageBannerProps {
+  reason: StorageFallbackReason
+}
+
+export function StorageBanner({ reason }: StorageBannerProps) {
+  if (reason === 'none') return null
 
   return (
     <div className="wire border-x-0 border-t-0 px-4 py-2 text-center text-xs text-chrome-600" role="status">
-      Storage unavailable — this session is in-memory only.
+      {STORAGE_BANNER_TEXT[reason]}
     </div>
   )
 }
 
 export function Layout() {
-  const [storageUnavailable, setStorageUnavailable] = useState(false)
+  const [fallbackReason, setFallbackReason] = useState<StorageFallbackReason>('none')
 
   useEffect(() => {
     let cancelled = false
@@ -39,10 +46,10 @@ export function Layout() {
     const timer = window.setTimeout(() => {
       openDb()
         .then(() => {
-          if (!cancelled) setStorageUnavailable(isInMemory())
+          if (!cancelled) setFallbackReason(storageFallbackReason())
         })
         .catch(() => {
-          if (!cancelled) setStorageUnavailable(true)
+          if (!cancelled) setFallbackReason('unavailable')
         })
     }, 0)
 
@@ -68,7 +75,7 @@ export function Layout() {
           </nav>
         </div>
       </header>
-      <StorageBanner visible={storageUnavailable} />
+      <StorageBanner reason={fallbackReason} />
       <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-6">
         <Outlet />
       </main>

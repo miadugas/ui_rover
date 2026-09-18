@@ -38,10 +38,34 @@ const DESIGN_ENTRY: Entry = {
   updatedAt: 1,
 }
 
-function renderCard(entry: Entry) {
+const URL_LESS_ENTRY: Entry = {
+  id: '01HZZNOURL',
+  kind: 'design',
+  images: [{ id: 'img-3', order: 0, width: 900, height: 1200, mime: 'image/png' }],
+  tags: [],
+  note: '',
+  createdAt: 3,
+  updatedAt: 3,
+}
+
+const COMPONENT_ENTRY: Entry = {
+  id: '01HZZCOMPONENT',
+  kind: 'component',
+  parentId: DESIGN_ENTRY.id,
+  parentImageId: 'img-2',
+  componentTags: ['button', 'nav', 'card', 'form'],
+  images: [{ id: 'img-4', order: 0, width: 200, height: 60, mime: 'image/webp' }],
+  sourceImageId: 'img-4',
+  tags: [],
+  note: '',
+  createdAt: 4,
+  updatedAt: 4,
+}
+
+function renderCard(entry: Entry, parent?: Entry) {
   return render(
     <HashRouter>
-      <EntryCard entry={entry} />
+      <EntryCard entry={entry} parent={parent} />
     </HashRouter>,
   )
 }
@@ -68,6 +92,21 @@ describe('EntryCard', () => {
     expect(screen.getByText('design')).toBeInTheDocument()
   })
 
+  it('renders the shortcode as the card title', () => {
+    renderCard(PALETTE_ENTRY)
+
+    expect(screen.getByText('Cabc123XY')).toBeInTheDocument()
+  })
+
+  it('omits the platform badge and falls back to a title for a URL-less entry', () => {
+    renderCard(URL_LESS_ENTRY)
+
+    expect(screen.queryByText('IG')).not.toBeInTheDocument()
+    expect(screen.queryByText('TH')).not.toBeInTheDocument()
+    expect(screen.getByText('Untitled capture')).toBeInTheDocument()
+    expect(screen.getByText('design')).toBeInTheDocument()
+  })
+
   it('renders at most six swatches, each labelled with its hex', () => {
     renderCard(PALETTE_ENTRY)
 
@@ -88,5 +127,26 @@ describe('EntryCard', () => {
     expect(screen.getByText('warm')).toBeInTheDocument()
     expect(screen.queryByText('extra')).not.toBeInTheDocument()
     expect(screen.getByText(`${'A'.repeat(80)}…`)).toBeInTheDocument()
+  })
+
+  it('renders the component badge, capped chips, parent line and no platform badge', () => {
+    renderCard(COMPONENT_ENTRY, DESIGN_ENTRY)
+
+    const link = screen.getByRole('link')
+    expect(link).toHaveAttribute('href', `#/entry/${COMPONENT_ENTRY.id}`)
+    expect(screen.getByText('COMPONENT')).toBeInTheDocument()
+    expect(screen.getByText('Button')).toBeInTheDocument()
+    expect(screen.getByText('Nav')).toBeInTheDocument()
+    expect(screen.getByText('Card')).toBeInTheDocument()
+    expect(screen.queryByText('Form')).not.toBeInTheDocument()
+    expect(screen.getByText(`from ${DESIGN_ENTRY.shortcode}`)).toBeInTheDocument()
+    expect(screen.queryByText('IG')).not.toBeInTheDocument()
+    expect(screen.queryByText('TH')).not.toBeInTheDocument()
+  })
+
+  it('omits the "from" line for a component without a resolvable parent', () => {
+    renderCard(COMPONENT_ENTRY)
+
+    expect(screen.queryByText(/^from /)).not.toBeInTheDocument()
   })
 })

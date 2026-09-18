@@ -14,6 +14,7 @@ import {
   importMerge,
   importReplace,
   prepareImport,
+  resolveImport,
   validateExportFile,
 } from './export'
 
@@ -34,7 +35,7 @@ const ROLE_MAP: RoleMap = {
 
 function fixture(
   id: string,
-  url: string,
+  url?: string,
   createdAt = 1,
   imageIds = [`${id}-image`],
 ): ImportEntry {
@@ -47,9 +48,13 @@ function fixture(
   }))
   const entry: Entry = {
     id,
-    url,
-    platform: 'instagram',
-    shortcode: `shortcode-${id}`,
+    ...(url
+      ? {
+          url,
+          platform: 'instagram' as const,
+          shortcode: `shortcode-${id}`,
+        }
+      : {}),
     kind: 'design',
     images: imageRefs,
     tags: ['reference'],
@@ -65,6 +70,29 @@ function fixture(
   }))
 
   return { entry, images }
+}
+
+function componentFixture(
+  id: string,
+  parent: ImportEntry,
+  createdAt = 1,
+): ImportEntry {
+  const component = fixture(id, undefined, createdAt)
+  const parentImage = parent.entry.images[0]
+  const componentImage = component.entry.images[0]
+  if (!parentImage || !componentImage) throw new Error('Fixture image missing')
+
+  component.entry = {
+    ...component.entry,
+    kind: 'component',
+    parentId: parent.entry.id,
+    parentImageId: parentImage.id,
+    sourceImageId: componentImage.id,
+    sourceRect: { x: 0.1, y: 0.2, w: 0.4, h: 0.3 },
+    componentTags: ['button', 'nav'],
+  }
+
+  return component
 }
 
 function validExportFile(): ExportFileV1 {
@@ -100,6 +128,34 @@ function validExportFile(): ExportFileV1 {
       },
     ],
   }
+}
+
+function validComponentExportFile(): ExportFileV1 {
+  const file = validExportFile()
+  file.entries.push({
+    id: 'valid-component',
+    kind: 'component',
+    images: [
+      {
+        id: 'valid-component-image',
+        order: 0,
+        width: 80,
+        height: 40,
+        mime: 'image/png',
+        dataBase64: btoa('component-image'),
+      },
+    ],
+    sourceImageId: 'valid-component-image',
+    parentId: 'valid-entry',
+    parentImageId: 'valid-image',
+    sourceRect: { x: 0.1, y: 0.2, w: 0.4, h: 0.3 },
+    componentTags: ['button', 'nav'],
+    tags: ['reference'],
+    note: 'component',
+    createdAt: 2,
+    updatedAt: 2,
+  })
+  return file
 }
 
 function expectProblem(value: unknown, path: string): void {
@@ -142,26 +198,17 @@ describe('export and import', () => {
     vi.clearAllMocks()
   })
 
-  it('round-trips entries, image metadata, and full image blobs', async () => {
-    const older = fixture(
-      'roundtrip-older',
-      'https://instagram.com/p/roundtrip-older',
-      10,
-      ['older-first', 'older-second'],
-    )
-    const newer = fixture(
-      'roundtrip-newer',
-      'https://instagram.com/p/roundtrip-newer',
-      20,
-    )
-    older.entry.kind = 'palette'
-    older.entry.colors = ['#ffffff', '#ff0000', '#000000']
-    older.entry.roleMap = { ...ROLE_MAP }
+  it('round-trips a URL-less parent, component, and full image blobs', async () => {
+    const parent = fixture('roundtrip-parent', undefined, 10, [
+      'parent-first',
+      'parent-second',
+    ])
+    const component = componentFixture('roundtrip-component', parent, 20)
 
-    await createEntry(older.entry, older.images)
-    await createEntry(newer.entry, newer.images)
+    await createEntry(parent.entry, parent.images)
+    await createEntry(component.entry, component.images)
 
-    const expectedBytes = [...older.images, ...newer.images].reduce(
+    const expectedBytes = [...parent.images, ...component.images].reduce(
       (total, image) => total + image.blob.size,
       0,
     )
@@ -180,11 +227,12 @@ describe('export and import', () => {
     await expect(importMerge(batch)).resolves.toEqual({
       imported: 2,
       skipped: 0,
+      orphaned: 0,
     })
 
-    expect(await listEntries()).toEqual([newer.entry, older.entry])
+    expect(await listEntries()).toEqual([component.entry, parent.entry])
 
-    for (const expected of [older, newer]) {
+    for (const expected of [parent, component]) {
       const storedImages = await listImagesForEntry(expected.entry.id)
       expect(storedImages.map(imageMetadata)).toEqual(
         expected.images.map(imageMetadata),
@@ -202,7 +250,10 @@ describe('export and import', () => {
       'merge-existing',
       'https://instagram.com/p/merge-existing',
     )
-    const collision = fixture('merge-collision', existing.entry.url)
+    const collision = fixture(
+      'merge-collision',
+      'https://instagram.com/p/merge-existing',
+    )
     const fresh = fixture(
       'merge-fresh',
       'https://instagram.com/p/merge-fresh',
@@ -212,6 +263,7 @@ describe('export and import', () => {
     await expect(importMerge([collision, fresh])).resolves.toEqual({
       imported: 1,
       skipped: 1,
+      orphaned: 0,
     })
     expect((await listEntries()).map((entry) => entry.id).sort()).toEqual([
       existing.entry.id,
@@ -267,10 +319,26 @@ describe('export and import', () => {
     expect(imported.crop).toEqual(entryWithRead.entry.crop)
   })
 
-  it('validates a file without paletteSource/crop unchanged', () => {
+  it('imports a v0.2.0-style file unchanged', async () => {
     const file = validExportFile()
     const validation = validateExportFile(file)
     expect(validation.ok).toBe(true)
+    if (!validation.ok) throw new Error(validation.problem)
+
+    const batch = await prepareImport(validation.file)
+    await expect(importReplace(batch)).resolves.toEqual({
+      imported: 1,
+      skipped: 0,
+      orphaned: 0,
+    })
+    expect(await listEntries()).toEqual([
+      {
+        ...file.entries[0],
+        images: file.entries[0].images.map(
+          ({ dataBase64: _dataBase64, ...image }) => image,
+        ),
+      },
+    ])
   })
 
   it('rejects an invalid paletteSource, crop.imageId, and crop.w', () => {
@@ -298,6 +366,196 @@ describe('export and import', () => {
       h: 0.2,
     }
     expectProblem(tinyCrop, 'entries[0].crop.w')
+  })
+
+  it('accepts URL-less entries and valid component fields', () => {
+    const urlLess = validExportFile()
+    delete urlLess.entries[0].url
+    delete urlLess.entries[0].platform
+    delete urlLess.entries[0].shortcode
+
+    expect(validateExportFile(urlLess).ok).toBe(true)
+    expect(validateExportFile(validComponentExportFile()).ok).toBe(true)
+  })
+
+  it('rejects partial URL metadata and author without a URL', () => {
+    const platformWithoutUrl = validExportFile()
+    delete platformWithoutUrl.entries[0].url
+    delete platformWithoutUrl.entries[0].shortcode
+    expectProblem(platformWithoutUrl, 'entries[0].platform')
+
+    const missingPlatform = validExportFile()
+    delete missingPlatform.entries[0].platform
+    expectProblem(missingPlatform, 'entries[0].platform')
+
+    const authorWithoutUrl = validExportFile()
+    delete authorWithoutUrl.entries[0].url
+    delete authorWithoutUrl.entries[0].platform
+    delete authorWithoutUrl.entries[0].shortcode
+    authorWithoutUrl.entries[0].author = 'author'
+    expectProblem(authorWithoutUrl, 'entries[0].author')
+  })
+
+  it('rejects invalid component provenance and image fields', () => {
+    const missingParentId = validComponentExportFile()
+    delete missingParentId.entries[1].parentId
+    expectProblem(missingParentId, 'entries[1].parentId')
+
+    const missingParentImageId = validComponentExportFile()
+    delete missingParentImageId.entries[1].parentImageId
+    expectProblem(missingParentImageId, 'entries[1].parentImageId')
+
+    const invalidSourceRect = validComponentExportFile()
+    invalidSourceRect.entries[1].sourceRect = {
+      x: 0.1,
+      y: 0.1,
+      w: 0.01,
+      h: 0.2,
+    }
+    expectProblem(invalidSourceRect, 'entries[1].sourceRect.w')
+
+    const invalidTag = validComponentExportFile()
+    // @ts-expect-error deliberately invalid for the test
+    invalidTag.entries[1].componentTags = ['button', 'tooltip']
+    expectProblem(invalidTag, 'entries[1].componentTags[1]')
+
+    const twoImages = validComponentExportFile()
+    twoImages.entries[1].images.push({
+      ...twoImages.entries[1].images[0],
+      id: 'second-component-image',
+    })
+    expectProblem(twoImages, 'entries[1].images')
+
+    const wrongSourceImage = validComponentExportFile()
+    wrongSourceImage.entries[1].sourceImageId = 'wrong-image'
+    expectProblem(wrongSourceImage, 'entries[1].sourceImageId')
+  })
+
+  it('rejects component provenance on non-component entries', () => {
+    for (const [key, value] of [
+      ['parentId', 'parent'],
+      ['parentImageId', 'parent-image'],
+      ['sourceRect', { x: 0.1, y: 0.1, w: 0.2, h: 0.2 }],
+    ] as const) {
+      const file = validExportFile()
+      Object.assign(file.entries[0], { [key]: value })
+      expectProblem(file, `entries[0].${key}`)
+    }
+  })
+
+  it('rejects component tags on non-component entries', () => {
+    const file = validExportFile()
+    file.entries[0].componentTags = ['button']
+
+    expectProblem(file, 'entries[0].componentTags')
+  })
+
+  describe('resolveImport', () => {
+    it('orders an accepted parent before a component', () => {
+      const parent = fixture('ordered-parent')
+      const component = componentFixture('ordered-component', parent)
+
+      const resolution = resolveImport([component, parent], {
+        mode: 'replace',
+        existing: [],
+      })
+
+      expect(resolution).toEqual({
+        accepted: [parent, component],
+        skipped: 0,
+        orphaned: 0,
+      })
+    })
+
+    it('orphans a component when its parent is absent', () => {
+      const parent = fixture('absent-parent')
+      const component = componentFixture('orphan-component', parent)
+
+      expect(
+        resolveImport([component], { mode: 'replace', existing: [] }),
+      ).toEqual({ accepted: [], skipped: 0, orphaned: 1 })
+    })
+
+    it('orphans a component when its parent is skipped for a URL collision', () => {
+      const sharedUrl = 'https://instagram.com/p/shared-parent-url'
+      const existing = fixture('existing-parent', sharedUrl)
+      const collidingParent = fixture('colliding-parent', sharedUrl)
+      const component = componentFixture(
+        'collision-orphan',
+        collidingParent,
+      )
+
+      expect(
+        resolveImport([component, collidingParent], {
+          mode: 'merge',
+          existing: [existing.entry],
+        }),
+      ).toEqual({ accepted: [], skipped: 1, orphaned: 1 })
+    })
+
+    it('ignores a pre-existing parent in replace mode', () => {
+      const existingParent = fixture('replace-existing-parent')
+      const component = componentFixture(
+        'replace-orphan',
+        existingParent,
+      )
+
+      expect(
+        resolveImport([component], {
+          mode: 'replace',
+          existing: [existingParent.entry],
+        }),
+      ).toEqual({ accepted: [], skipped: 0, orphaned: 1 })
+    })
+
+    it('orphans a component when parentImageId is not on its parent', () => {
+      const parent = fixture('wrong-image-parent')
+      const component = componentFixture('wrong-image-component', parent)
+      component.entry.parentImageId = 'missing-parent-image'
+
+      expect(
+        resolveImport([component, parent], {
+          mode: 'replace',
+          existing: [],
+        }),
+      ).toEqual({ accepted: [parent], skipped: 0, orphaned: 1 })
+    })
+
+    it('does not allow a component to parent another component', () => {
+      const root = fixture('component-root')
+      const componentParent = componentFixture('component-parent', root)
+      const grandchild = componentFixture('component-grandchild', componentParent)
+
+      expect(
+        resolveImport([grandchild, componentParent, root], {
+          mode: 'replace',
+          existing: [],
+        }),
+      ).toEqual({
+        accepted: [root, componentParent],
+        skipped: 0,
+        orphaned: 1,
+      })
+    })
+
+    it('skips ID and URL collisions inside a merge batch', () => {
+      const first = fixture(
+        'batch-first',
+        'https://instagram.com/p/batch-shared',
+      )
+      const duplicateUrl = fixture(
+        'batch-second',
+        'https://instagram.com/p/batch-shared',
+      )
+      const duplicateId = fixture('batch-first')
+
+      expect(
+        resolveImport([first, duplicateUrl, duplicateId], {
+          mode: 'merge',
+          existing: [],
+        }),
+      ).toEqual({ accepted: [first], skipped: 2, orphaned: 0 })
+    })
   })
 
   it('rolls back a merge when a later image id collides', async () => {

@@ -1,8 +1,13 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { __resetDatabaseForTests, createEntry, getEntry } from '../lib/db'
+import {
+  __resetDatabaseForTests,
+  createEntry,
+  getEntry,
+  importEntries,
+} from '../lib/db'
 import type { Entry, ImageRecord, RoleMap } from '../types'
 import type { ReadResult } from '../features/palette/read/readPalette'
 import { ReadCancelledError } from '../features/palette/read/readProgress'
@@ -22,19 +27,28 @@ vi.mock('../features/palette/read/ocrWorker', () => ({
 }))
 
 const deleteEntryMock = vi.hoisted(() => vi.fn())
+const getImageBlobMock = vi.hoisted(() => vi.fn())
 
-// Only `deleteEntry` is faked, and by default it still deletes: every other test
-// here asserts against the real store. The real implementation is parked on a
-// hoisted holder because the factory runs before module-level bindings exist.
+// These mock seams delegate to the real store unless a test overrides them.
+// The implementations are parked on a hoisted holder because the factory runs
+// before module-level bindings exist.
 const realDb = vi.hoisted(() => ({
   deleteEntry: undefined as unknown as (id: string) => Promise<void>,
+  getImageBlob: undefined as unknown as (
+    id: string,
+  ) => Promise<Blob | undefined>,
 }))
 
 vi.mock('../lib/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/db')>()
   realDb.deleteEntry = actual.deleteEntry
+  realDb.getImageBlob = actual.getImageBlob
 
-  return { ...actual, deleteEntry: deleteEntryMock }
+  return {
+    ...actual,
+    deleteEntry: deleteEntryMock,
+    getImageBlob: getImageBlobMock,
+  }
 })
 
 const ROLE_MAP: RoleMap = {
@@ -102,6 +116,45 @@ async function seed(entry: Entry): Promise<void> {
   await createEntry(entry, [imageRecord(entry.id, entry.images[0].id)])
 }
 
+function componentFixture(
+  id: string,
+  parentId: string,
+  overrides: Partial<Entry> = {},
+): Entry {
+  return {
+    id,
+    kind: 'component',
+    parentId,
+    parentImageId: `${parentId}-img`,
+    sourceRect: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 },
+    images: [{ id: `${id}-img`, order: 0, width: 200, height: 100, mime: 'image/webp' }],
+    sourceImageId: `${id}-img`,
+    componentTags: ['button'],
+    tags: [],
+    note: '',
+    createdAt: 1_700_000_100_000,
+    updatedAt: 1_700_000_100_000,
+    ...overrides,
+  }
+}
+
+function designFixture(id: string): Entry {
+  return entryFixture({
+    id,
+    kind: 'design',
+    colors: undefined,
+    roleMap: undefined,
+    sourceImageId: undefined,
+    mockTemplate: undefined,
+  })
+}
+
+async function seedComponentOf(parentId: string, id: string): Promise<void> {
+  await seed(designFixture(parentId))
+  const component = componentFixture(id, parentId)
+  await createEntry(component, [imageRecord(id, component.images[0].id)])
+}
+
 interface RouterHandoff {
   notice?: string
   focusHeading?: boolean
@@ -121,12 +174,18 @@ function renderEntry(id: string, state?: RouterHandoff) {
 
 beforeEach(async () => {
   await __resetDatabaseForTests()
+  vi.spyOn(URL, 'createObjectURL').mockImplementation(() => 'blob:ui_rover/test')
   readPaletteMock.mockReset()
   deleteEntryMock.mockReset()
   deleteEntryMock.mockImplementation((id: string) => realDb.deleteEntry(id))
+  getImageBlobMock.mockReset()
+  getImageBlobMock.mockImplementation((id: string) => realDb.getImageBlob(id))
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 describe('EntryPage', () => {
   it('shows a not-found message with a way back for an unknown id', async () => {
@@ -149,6 +208,27 @@ describe('EntryPage', () => {
       'rel',
       'noopener noreferrer',
     )
+  })
+
+  it('renders a URL-less entry without a source link or platform badge', async () => {
+    await seed(
+      entryFixture({
+        id: 'entry-12',
+        url: undefined,
+        platform: undefined,
+        shortcode: undefined,
+      }),
+    )
+    renderEntry('entry-12')
+
+    expect(
+      await screen.findByRole('heading', { name: 'Untitled capture' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('link', { name: 'Open original post' }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText('IG')).not.toBeInTheDocument()
+    expect(screen.queryByText('TH')).not.toBeInTheDocument()
   })
 
   it('extracts and persists a palette for a design entry', async () => {
@@ -370,5 +450,159 @@ describe('EntryPage', () => {
     expect(stored?.colors).toBeUndefined()
     expect(stored?.paletteSource).toBeUndefined()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('offers component capture and lists the components of a design', async () => {
+    await seedComponentOf('entry-13', 'child-a')
+    renderEntry('entry-13')
+
+    expect(
+      await screen.findByRole('button', { name: 'Capture component' }),
+    ).toBeInTheDocument()
+    expect(
+      await screen.findByRole('heading', { name: 'Components (1)' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('link', { name: 'component: button — from entry-13' }),
+    ).toHaveAttribute('href', '/entry/child-a')
+  })
+
+  it('explains when selected image data is missing', async () => {
+    const entry = designFixture('entry-18')
+    await seed(entry)
+    getImageBlobMock.mockResolvedValue(undefined)
+    renderEntry(entry.id)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "This screenshot's image data is missing — component capture and palette reads are unavailable for it.",
+    )
+    expect(
+      screen.getByRole('button', { name: 'Capture component' }),
+    ).toBeDisabled()
+  })
+
+  it('does not report missing image data while it is loading', async () => {
+    const entry = designFixture('entry-19')
+    await seed(entry)
+    let resolveImageBlob: (blob: Blob | undefined) => void = () => undefined
+    const pendingImageBlob = new Promise<Blob | undefined>((resolve) => {
+      resolveImageBlob = resolve
+    })
+    getImageBlobMock.mockReturnValue(pendingImageBlob)
+    renderEntry(entry.id)
+
+    const captureButton = await screen.findByRole('button', {
+      name: 'Capture component',
+    })
+    expect(captureButton).toBeDisabled()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    await act(async () => {
+      resolveImageBlob(undefined)
+      await pendingImageBlob
+    })
+  })
+
+  it('locks the carousel to the image where component capture started', async () => {
+    const user = userEvent.setup()
+    const entry = designFixture('entry-17')
+    entry.images = [
+      {
+        id: 'entry-17-image-a',
+        order: 0,
+        width: 1080,
+        height: 1350,
+        mime: 'image/png',
+      },
+      {
+        id: 'entry-17-image-b',
+        order: 1,
+        width: 1080,
+        height: 1350,
+        mime: 'image/png',
+      },
+    ]
+    const imageA = imageRecord(entry.id, entry.images[0].id)
+    const imageB = { ...imageRecord(entry.id, entry.images[1].id), order: 1 }
+    await createEntry(entry, [imageA, imageB])
+    renderEntry(entry.id)
+
+    const captureButton = await screen.findByRole('button', {
+      name: 'Capture component',
+    })
+    await waitFor(() => expect(captureButton).toBeEnabled())
+    const tabs = screen.getAllByRole('tab')
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
+
+    await user.click(captureButton)
+
+    for (const tab of tabs) {
+      expect(tab).toBeDisabled()
+      expect(tab).toHaveAttribute('aria-disabled', 'true')
+    }
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'false')
+  })
+
+  it('renders a component with its badge, parent link and no capture button', async () => {
+    await seedComponentOf('entry-14', 'child-b')
+    renderEntry('child-b')
+
+    expect(
+      await screen.findByRole('heading', { name: 'Component of entry-14' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('COMPONENT')).toBeInTheDocument()
+    const parentLink = screen.getByRole('link', { name: 'entry-14' })
+    expect(parentLink).toHaveAttribute(
+      'href',
+      '/entry/entry-14',
+    )
+    expect(parentLink).toContainElement(screen.getByTestId('parent-thumbnail'))
+    await waitFor(() =>
+      expect(parentLink.querySelector('img[alt=""]')).not.toBeNull(),
+    )
+    expect(
+      screen.queryByRole('button', { name: 'Capture component' }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+  })
+
+  it('persists a component chip edit through the debounced patch', async () => {
+    const user = userEvent.setup()
+    await seedComponentOf('entry-15', 'child-c')
+    renderEntry('child-c')
+
+    const navChip = await screen.findByRole('button', { name: 'Nav' })
+    expect(screen.getByRole('button', { name: 'Button' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+
+    await user.click(navChip)
+    expect(navChip).toHaveAttribute('aria-pressed', 'true')
+
+    await waitFor(
+      async () => {
+        expect((await getEntry('child-c'))?.componentTags).toEqual([
+          'button',
+          'nav',
+        ])
+      },
+      { timeout: 2000 },
+    )
+  })
+
+  it('reports a component whose parent is gone', async () => {
+    const orphan = componentFixture('child-d', 'entry-16')
+    await importEntries([
+      { entry: orphan, images: [imageRecord('child-d', orphan.images[0].id)] },
+    ])
+    renderEntry('child-d')
+
+    expect(
+      await screen.findByRole('heading', { name: 'Component' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Parent no longer available')).toBeInTheDocument()
+    expect(screen.queryByTestId('parent-thumbnail')).not.toBeInTheDocument()
   })
 })

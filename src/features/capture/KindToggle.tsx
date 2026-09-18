@@ -1,8 +1,8 @@
 import { useRef } from 'react'
 import type { KeyboardEvent } from 'react'
-import type { Kind } from '../../types'
+import type { CaptureKind } from '../../types'
 
-const OPTIONS: ReadonlyArray<{ kind: Kind; label: string }> = [
+const OPTIONS: ReadonlyArray<{ kind: CaptureKind; label: string }> = [
   { kind: 'palette', label: 'Palette' },
   { kind: 'design', label: 'Design' },
 ]
@@ -11,8 +11,8 @@ const PREVIOUS_KEYS = new Set(['ArrowLeft', 'ArrowUp'])
 const NEXT_KEYS = new Set(['ArrowRight', 'ArrowDown'])
 
 export interface KindToggleProps {
-  value: Kind
-  onChange: (kind: Kind) => void
+  value: CaptureKind
+  onChange: (kind: CaptureKind) => void
   disabled?: boolean
 }
 

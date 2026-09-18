@@ -2,16 +2,17 @@
 
 ## 1. How to Read This Document
 
-This describes ui_rover **v0.2.0 as built**: the capture → palette/mock → library MVP (`docs/1-plans/F_0.1.0_mvp-capture-library.plan.md`) plus the v0.2.0 read pipeline — OCR of printed hex codes, swatch-blob detection, and crop — that replaced whole-image quantize as the primary way a palette entry gets its colors (`docs/1-plans/F_0.2.0_read-the-palette.plan.md`). No section is "(planned)" anymore; when the next feature lands, update the affected sections per `docs/ARCHI-rules.md`. Audience: Mia + any agent doing TRIP work in this repo.
+This describes ui_rover **v0.3.0 as built**: v0.3.0 adds component capture and makes the post URL optional (`docs/1-plans/F_0.3.0_component-capture.plan.md`), on top of: the capture → palette/mock → library MVP (`docs/1-plans/F_0.1.0_mvp-capture-library.plan.md`) plus the v0.2.0 read pipeline — OCR of printed hex codes, swatch-blob detection, and crop — that replaced whole-image quantize as the primary way a palette entry gets its colors (`docs/1-plans/F_0.2.0_read-the-palette.plan.md`). No section is "(planned)" anymore; when the next feature lands, update the affected sections per `docs/ARCHI-rules.md`. Audience: Mia + any agent doing TRIP work in this repo.
 
 ## 2. Overview
 
-ui_rover is a personal UI/UX swipe file. Mia saves Instagram and Threads posts as one of two entry kinds:
+ui_rover is a personal UI/UX swipe file. Mia saves Instagram and Threads posts as one of three entry kinds:
 
 - **Design entries** — a post showing a UI/UX design. Stored as framed screenshots with tags and notes; optionally, "Extract palette" runs the same **read** (§12) on a chosen image and reveals the wireframe mock beneath, without changing the entry's kind.
 - **Palette entries** — a post showing a color palette. Colors are **read** from the card, not just extracted from the whole screenshot: OCR of printed hex codes first, swatch-blob shapes second, whole-image quantize last, resolved automatically on save and reviewed in a panel on the entry page. A crop tool lets Mia point the reader at the card when auto-detection misses. The result previews on a wireframe mock (11 selectable layout templates) where every block is a touchpoint to reassign its color.
+- **Component entries** (v0.3.0) — a button, nav, card… captured as a rectangle out of a design entry's screenshot. Each is its own entry with a natural-size WebP crop + thumb, fixed component chips plus free tags, a note, a link back to its parent post, and the same optional palette read. Components appear as library cards and in a Components strip on the parent page; deleting the parent deletes them.
 
-Hard constraint: **no Meta/Instagram/Threads API, no scraping.** The post URL is the bookmark key; the post image comes from a pasted or dropped screenshot. Everything runs client-side, single-user, no backend.
+Hard constraint: **no Meta/Instagram/Threads API, no scraping.** The post URL is an **optional** bookmark (and the dedupe key when present) — the entry id is the identity; the post image comes from a pasted or dropped screenshot, and a screenshot alone can be captured. Everything runs client-side, single-user, no backend.
 
 High-level: static SPA (HashRouter) → browser-only processing (Canvas for palette extraction) → IndexedDB for persistence (`idb`, with an in-memory fallback) → JSON export/import as the backup story.
 
@@ -59,8 +60,8 @@ ui_rover/
     │   ├── export.ts         # export/import v1 serialization, validation, base64 chunking
     │   ├── useLibrary.ts      # hook over db.ts (entries/status/add/update/remove), subscribed to change emitter
     │   ├── useDebouncedPatch.ts  # 300ms-debounced autosave, flush/retry/discard
-    │   └── platform.ts        # PLATFORM_LABEL
-    ├── components/          # shared primitives: Button, Badge, Field, Popover
+    │   └── platform.ts        # PLATFORM_LABEL, entryTitle(entry, parent?) — the one fallback title
+    ├── components/          # shared primitives: Button, Badge, Field, Popover, chipStyles (shared chip classes)
     ├── features/
     │   ├── capture/          # URL + image intake, save flow
     │   │   ├── CaptureCard.tsx, UrlField.tsx, ImageTray.tsx, KindToggle.tsx
@@ -85,6 +86,12 @@ ui_rover/
     │   │       ├── spec.ts, MockPanel.tsx, WireframeMock.tsx, Frame.tsx, Block.tsx
     │   │       ├── TemplatePicker.tsx, TouchpointPopover.tsx, SwatchStrip.tsx
     │   │       └── templates/  # 11 layout specs + registry (index.ts)
+    │   ├── components/       # v0.3.0 component capture
+    │   │   ├── componentTags.ts     # labels + order for the 14 fixed chips
+    │   │   ├── cropComponent.ts     # Canvas: natural-size WebP/JPEG crop + thumb, ComponentTooLargeError; pure pixelRect
+    │   │   ├── ComponentForm.tsx    # chips + free tags + note, save/back/cancel
+    │   │   ├── ComponentCapture.tsx # CropTool (local rect) → cropComponent → form → createEntry
+    │   │   └── ComponentStrip.tsx   # parent-page strip: listChildren + subscribe, remove, focus new item
     │   └── library/          # grid, filters, entry detail helpers, export/import UI
     │       ├── EntryCard.tsx, FilterBar.tsx, filters.ts, useThumbUrl.ts, EmptyState.tsx
     │       ├── ImageCarousel.tsx, TagEditor.tsx, NoteField.tsx, DeviceFrame.tsx, ExportImport.tsx
@@ -93,19 +100,20 @@ ui_rover/
         ├── LibraryPage.tsx, EntryPage.tsx
 ```
 
-Every `.ts(x)` unit above sits beside its co-located `*.test.ts(x)` (38 test files today — see §16).
+Every `.ts(x)` unit above sits beside its co-located `*.test.ts(x)` (46 test files today — see §16).
 
 ## 5. Core Architecture Principles
 
 1. **Client-only.** No server, no auth, no third-party API. Anything that needs a token is out of scope.
-2. **URL is identity.** Every entry is keyed by its normalized post URL (`by-url` unique index); duplicates are detected on paste.
+2. **id is identity.** Every entry is keyed by its `ulid`. The normalized post URL, when present, is a bookmark and the dedupe key (`by-url` unique index — IndexedDB does not index records whose key path is `undefined`, so any number of URL-less entries and components coexist); duplicates are detected on paste.
 3. **Screenshot is the source of truth.** Palette extraction and design mocks derive from the stored image, never from a fetch.
 4. **Wireframe aesthetic.** The app's own chrome stays neutral (grays, mono labels) so saved palettes and designs read clearly against it.
 5. **Feature folders over layers.** capture / palette / library own their components, hooks, and helpers.
 6. **Early returns, descriptive names, complete implementations** (global style rules).
-7. **One persistence owner per field group.** Palette fields (`colors`/`roleMap`/`blockOverrides`/`paletteSource`) are written only by `MockPanel` via `useDebouncedPatch`; `crop` joins the same group and is written by `MockPanel` too, but immediately (like `mockTemplate`, not debounced) — a crop is a discrete decision, not a stream of edits. `tags`/`note` are written only by `EntryPage` via its own `useDebouncedPatch` instance; `mockTemplate` is written immediately by whichever component last changed it (`CaptureCard` at save, `TemplatePicker`/`MockPanel` afterward). Two writers never share a field. Within `MockPanel`, `editorRect` (the crop tool's in-progress drag) and `crop` (the last known-persisted rect) are deliberately two pieces of state: dragging never touches `crop` until Confirm calls `saveCrop`.
+7. **One persistence owner per field group.** Palette fields (`colors`/`roleMap`/`blockOverrides`/`paletteSource`) are written only by `MockPanel` via `useDebouncedPatch`; `crop` joins the same group and is written by `MockPanel` too, but immediately (like `mockTemplate`, not debounced) — a crop is a discrete decision, not a stream of edits. `tags`/`note` are written only by `EntryPage` via its own `useDebouncedPatch` instance; `mockTemplate` is written immediately by whichever component last changed it (`CaptureCard` at save, `TemplatePicker`/`MockPanel` afterward). Two writers never share a field. Within `MockPanel`, `editorRect` (the crop tool's in-progress drag) and `crop` (the last known-persisted rect) are deliberately two pieces of state: dragging never touches `crop` until Confirm calls `saveCrop`. `componentTags` (v0.3.0) joins the `tags`/`note` group written by `EntryPage`'s debounced owner. A component itself is written exactly once, by `ComponentCapture` via `createEntry`; its capture rect is local component state and never touches the parent's palette `crop`.
 8. **Optimistic draft, dirty-gated re-seed.** Components that edit persisted state (`MockPanel`) hold a local draft and mirror it into `updateEntry` on a debounce. The draft only re-seeds from the entry's freshly-loaded state while the draft is clean (`isDirty === false`) and the entry's `updatedAt` has actually advanced — so a landing autosave write can never clobber an edit made in the meantime.
 9. **Measure before tuning.** The OCR configuration (engine, PSM, whitelist, crop width, the two-pass geometry) is not a guess — it is set from a recorded spike (`docs/6-memo/ocr-spike.md`) run against a real fixture, and `ocrConfig.ts`/`readPalette.ts` cite that memo inline. Changing any of those values without a new measurement against the fixture (or a better one) is a regression, not a tweak.
+10. **Provenance over overloading.** A component keeps `sourceImageId` = its *own* image — the field the palette read both reads and writes — and records where it came from in separate fields (`parentId`, `parentImageId`, `sourceRect`). A field another subsystem writes must never double as a pointer.
 
 ## 6. Build System & Toolchain
 
@@ -129,14 +137,17 @@ No env vars, no runtime config. Tailwind v4 tokens live in `src/index.css` under
 
 ## 8. Components & UI Architecture
 
-- **`Layout`** (`app/Layout.tsx`) — mono wordmark, nav (`Capture` / `Library`), `StorageBanner` (shown when `isInMemory()` after `openDb()` resolves), `<Outlet>`.
+- **`Layout`** (`app/Layout.tsx`) — mono wordmark, nav (`Capture` / `Library`), `StorageBanner` (text chosen from `storageFallbackReason()` after `openDb()` resolves — `unavailable` vs `upgrade-failed`; hidden for `none`), `<Outlet>`.
 - **`LandingPage`** — wireframe hero + inline `CaptureCard`; "Recent" row of the last 4 entries (platform/kind badges, mini swatch strip) when any exist.
-- **`CaptureCard`** — orchestrates `UrlField` (live parse + platform badge + duplicate-link), `ImageTray` (thumbnails from `useImageIntake`, reorder/remove, source-image radio), `KindToggle` (palette | design, keyboard radiogroup). Save runs `readPalette` (§12) for `kind === 'palette'`, with the Save button showing read progress and a "Cancel read" control; a cancelled read falls back to plain `extract` (quantize) so the entry is still created with a palette, any other failure falls back to `design` + router-state notice. Either way `createEntry` follows, then navigation to `/entry/:id` carries `state: { pendingRead, focusHeading, notice? }` so the review panel can open on arrival.
+- **`CaptureCard`** — state typed as `CaptureKind` (`palette | design` — components only come from a parent). Orchestrates `UrlField` (optional URL: empty is valid, invalid non-empty blocks Save; live parse + platform badge + duplicate-link), `ImageTray` (thumbnails from `useImageIntake`, reorder/remove, source-image radio), `KindToggle` (palette | design, keyboard radiogroup). Save runs `readPalette` (§12) for `kind === 'palette'`, with the Save button showing read progress and a "Cancel read" control; a cancelled read falls back to plain `extract` (quantize) so the entry is still created with a palette, any other failure falls back to `design` + router-state notice. Either way `createEntry` follows, then navigation to `/entry/:id` carries `state: { pendingRead, focusHeading, notice? }` so the review panel can open on arrival.
 - **`EntryPage`** (`EntryView`) — header (badges, source link, created date), `ImageCarousel` (thumb tabs + large view, source marker), design-only `DeviceFrame` + first-extract button (now backed by `readPalette` with progress/cancel — `MockPanel` isn't mounted yet, so `EntryPage` runs the read itself, applies it via `updateEntry`, and hands the `ReadResult` to `MockPanel` as a `pendingRead` prop once it mounts), `MockPanel` (once the entry has or gains a palette), `TagEditor` + `NoteField` (both via `useDebouncedPatch`, flush on blur), delete with a two-step confirm. Router state (`notice`/`focusHeading`/`pendingRead`) is read once into local `handoff` state on mount, then the history entry is replaced with `state: null` — a refresh or Back can never re-offer a stale pending read.
+- **`EntryPage` views by kind (v0.3.0)** — *palette*: as above. *design*: adds a **Capture component** button (enabled once the selected image's blob/URL are loaded) that swaps the design tools for `ComponentCapture`, and a `ComponentStrip` below. *component*: `COMPONENT` badge, title via `entryTitle(entry, parent)`, "From: <parent>" link (or "Parent no longer available"), the component's own image in a `wire` frame, an editable chip group for `componentTags` (through the page's existing debounced owner), `TagEditor`/`NoteField`, delete, and the design-style Extract palette → `MockPanel`; no nested capture. Platform badge and "Open original post" render only when `url` exists.
+- **`ComponentCapture`** — steps *crop* (`CropTool`, rect in local state) → `cropComponent(imageBlob, rect)` → *form* (`ComponentForm` with an object-URL preview minted in the confirm handler and revoked by one cleanup effect) → `createEntry` with `parentId`/`parentImageId`/`sourceRect` and `sourceImageId` = the crop's own image. `ComponentTooLargeError` returns to the crop step with a message; a failed save keeps the form.
+- **`ComponentStrip`** — `listChildren(parent.id)` refreshed on the change emitter; thumbs via `useThumbUrl`, up to 3 chips, link named `component: <chips> — from <parent title>`, remove with inline confirm; focuses the newly captured item once.
 - **`MockPanel`** — single owner of `colors`/`roleMap`/`blockOverrides`/`mockTemplate`/`paletteSource`/`crop`; composes `SwatchStrip`, `TemplatePicker`, `WireframeMock` (→ `Frame` → `Block`), `TouchpointPopover`, and the v0.2.0 read pieces: `ReadPalettePanel` (read/crop controls + review checklist) and `CropTool` (opened on demand, seeded from the persisted `crop`). `applyRead(colors, mode)` replaces (re-assigns roles, clears overrides) or appends (swatches only, roles/overrides untouched) through the existing debounced-patch owner path; a `pendingRead` handed in as a prop (from Capture's router state or EntryPage's first extract) opens the review once per result via a ref guard. `saveCrop` writes `crop` immediately, optimistically, with revert-and-Retry on failure — the same pattern as `mockTemplate`.
 - **`ReadPalettePanel`** — states: idle ("Read palette" + "Crop"/"Edit crop" buttons), reading (progress label + Cancel), review (one-line summary, a checklist of candidates with hex/source badge/confidence/repaired marker, Apply (replace) / Append / Cancel). The winning source's unrepaired candidates start checked; repairs and losing-detector colors are available but unchecked. When the result carries an `autoCrop`, a "Keep this crop" action stores it.
 - **`CropTool`** — pointer-drag draws a rect over the `object-contain` source image (via `mapContainClick`, reused from `containMap.ts`); drag inside moves it, corner drag resizes; arrow keys nudge 1% (Shift = 5%), Enter confirms, Esc cancels; a live region announces the rect in percentages. Emits `NormalizedRect | null` on pointer-up only — a write per pointermove would thrash the owner.
-- **`LibraryPage`** — `FilterBar` (kind/platform/tag chips + text search, component state), grid of `EntryCard` (thumb read gated on `IntersectionObserver`), `EmptyState` (empty vs. no-results), `ExportImport`.
+- **`LibraryPage`** — builds `parentsById` once (`useMemo`) and hands each component card its parent; `FilterBar` (kind chips incl. **Component**, platform, tag chips, a component-type chip row shown only when components exist, text search that also matches component-type labels; component state), grid of `EntryCard` (thumb read gated on `IntersectionObserver`), `EmptyState` (empty vs. no-results), `ExportImport`.  `EntryCard`'s component variant shows the `COMPONENT` badge, up to 3 chips, "from <parent title>", and no platform badge. `ExportImport` renders the structured outcome "N imported, M skipped, K orphaned components" for both modes. `Layout`'s `StorageBanner` text depends on `storageFallbackReason()` (`unavailable` vs `upgrade-failed`).
 - **Shared primitives** (`src/components/`) — `Button` (variant/size), `Badge` (tone), `Field` (label/hint/error render-prop), `Popover` (a positioned `div` portaled to `document.body`, with focus trap + focus restore to the opening anchor — deliberately **not** the native `popover` attribute, so it works identically in every browser and is testable in jsdom).
 
 ## 9. State Management
@@ -203,13 +214,17 @@ flowchart TD
 
 `extract(blob)` (`features/palette/extract.ts`, unchanged) composes downsample → quantize → dedupe → sort → `assignRoles`; zero distinct colors is a hard failure (`ExtractionError`), 1–2 colors is a "degraded" success (`degraded: true`). `samplePixel(blob, nx, ny)` backs pick-from-image via the pure `mapContainClick` (`containMap.ts`, also reused by `CropTool`). Swatches are fully editable in `SwatchStrip`: remove (blocked at 1 swatch remaining; reassigns any role that used the removed hex to the nearest remaining color by luminance, and drops every `blockOverrides` entry holding that hex), add-by-hex, pick-from-image, reset roles (`assignRoles` rerun), reset palette (now `readPalette` rerun on the source blob + stored crop, not plain `extract`).
 
+**Component crops** (`features/components/cropComponent.ts`) are a separate, simpler path: decode the parent image, draw the sub-rectangle at natural pixel size, encode WebP (else JPEG) at 0.92 — *not* the OCR-tuned PNG `cropToBlob` — reject over `MAX_IMAGE_BYTES` with `ComponentTooLargeError`, then `makeThumb`. A palette read on a component is the unchanged orchestrator running on the component's own image.
+
 ## 13. Data Model
 
 `src/types.ts`:
 
 ```ts
 type Platform = 'instagram' | 'threads'
-type Kind = 'palette' | 'design'
+type Kind = 'palette' | 'design' | 'component'
+type CaptureKind = Exclude<Kind, 'component'>
+type ComponentTag = 'button' | 'nav' | 'card' | 'form' | 'input' | 'list' | 'modal' | 'table' | 'hero' | 'footer' | 'typography' | 'icon' | 'chart' | 'other'
 type Role = 'background' | 'surface' | 'text' | 'muted' | 'primary' | 'accent'
 type RoleMap = Record<Role, string>   // hex per role, always complete
 type MockTemplateId =
@@ -222,8 +237,9 @@ interface ImageRef { id: string; order: number; width: number; height: number; m
 // images store record = ImageRef & { entryId: string; blob: Blob; thumb: Blob }
 
 interface Entry {
-  id: string; url: string; platform: Platform; author?: string; shortcode: string
-  kind: Kind; images: ImageRef[]; sourceImageId?: string
+  id: string; url?: string; platform?: Platform; author?: string; shortcode?: string   // URL trio optional, present together
+  kind: Kind; images: ImageRef[]; sourceImageId?: string                                // always one of THIS entry's images
+  parentId?: string; parentImageId?: string; sourceRect?: NormalizedRect; componentTags?: ComponentTag[]   // component provenance + chips
   colors?: string[]; roleMap?: RoleMap; blockOverrides?: Record<string, string>
   mockTemplate?: MockTemplateId
   paletteSource?: PaletteSource            // which detector produced colors — 'quantize' when absent and colors exist
@@ -240,9 +256,11 @@ interface ExportFileV1 {
 
 `paletteSource` and `crop` are the only v0.2.0 additions to `Entry`; both optional, so IndexedDB (schema unchanged, no version bump) and the export format (still **v1**) need no migration — a v0.1.0 app importing a v0.2.0 export simply ignores the two new keys. `lib/export.ts`'s `validateExportFile` validates them **when present**: `paletteSource` against the three-member enum, `crop`'s rect within 0–1 with `w`/`h` ≥ `MIN_CROP_EDGE` (from `read/cropRect.ts`) and its `imageId` present among that entry's images — reporting the offending path exactly like every other field. `lib/db.ts`'s `applyPatch` drops any key whose patch value is `undefined` before merging, so `updateEntry(id, { crop: undefined })` (used by `saveCrop(null)`, §9) actually clears the field rather than writing a literal `undefined`.
 
-**IndexedDB** (`lib/db.ts`, schema v1, database `ui-rover`): store `entries` (keyPath `id`, indexes `by-url` unique / `by-kind` / `by-createdAt`), store `images` (keyPath `id`, index `by-entry`). `openDb()` catches a missing/unusable `indexedDB` and flips an in-memory `Map`-backed fallback implementing the identical API for the session; `StorageBanner` reads `isInMemory()`. `createEntry`/`deleteEntry`/`importEntries`/`replaceAll` each run in one `readwrite` transaction across `entries` + `images` (abort-and-rethrow on any failure, so nothing is ever orphaned); `updateEntry` is a read-modify-write serialized per entry through an in-module promise queue (`updateQueues`) so two debounced writers targeting the same entry can't clobber each other with stale reads.
+**IndexedDB** (`lib/db.ts`, **schema v2**, database `ui-rover`): store `entries` (keyPath `id`, indexes `by-url` unique / `by-kind` / `by-createdAt` / **`by-parent`**), store `images` (keyPath `id`, index `by-entry`). `upgrade(db, oldVersion)` is version-aware — v1 stores/indexes are created only when `oldVersion < 1`, `by-parent` when `oldVersion < 2` — and `storageFallbackReason()` (`'none' | 'unavailable' | 'upgrade-failed'`) records why the app fell back to memory. `createEntry` validates component relationships inside the write transaction (existing non-component parent, `parentImageId` among its images, exactly one image, `sourceImageId` = that image; non-components carry no parent). `deleteEntry` cascades **one level** in the same transaction: `index('by-parent').getAllKeys(id)` → children's images → children → the parent's images → the parent. `listChildren(parentId)` reads the index. The in-memory fallback mirrors all of it, including skipping URL dedupe when the candidate has no URL. `openDb()` catches a missing/unusable `indexedDB` and flips an in-memory `Map`-backed fallback implementing the identical API for the session; `StorageBanner` reads `storageFallbackReason()`. `createEntry`/`deleteEntry`/`importEntries`/`replaceAll` each run in one `readwrite` transaction across `entries` + `images` (abort-and-rethrow on any failure, so nothing is ever orphaned); `updateEntry` is a read-modify-write serialized per entry through an in-module promise queue (`updateQueues`) so two debounced writers targeting the same entry can't clobber each other with stale reads.
 
 **Export/import v1** (`lib/export.ts`): export chunks blob→base64 encoding (3 MB read chunks, 32 KB binary-string chunks) to stay within call-stack limits; thumbs are **not** exported (regenerated on import via `makeThumb`). `estimateExportBytes()` sums image bytes before building the JSON; above `EXPORT_WARN_BYTES` (150 MB) the UI warns and lets Mia proceed or cancel. Import: `validateExportFile` checks the complete v1 schema (format/version/every `Entry` field, image records, hex-color fields, `mockTemplate` membership) and rejects the whole file on the first offending path; `prepareImport` decodes every image to a `Blob` and regenerates thumbs in memory before any write. **Merge** (`importMerge`) skips id- or url-colliding entries and inserts the rest in one `importEntries` transaction; **replace** (`importReplace` → `replaceAll`) clears then inserts in one transaction, so old data survives an insert failure.
+
+v0.3.0 import resolution (`resolveImport`, pure): **pass 1** resolves collisions (Merge skips by `id`, or by `url` when present, including inside the batch; Replace accepts everything); **pass 2** validates components against the parent ids that will exist *after* the operation — existing ∪ accepted posts for Merge, accepted posts only for Replace — and requires `parentImageId` among that parent's images; failures are **orphaned** (skipped + counted, never written). Writes stay one transaction, parents first; both modes return `{ imported, skipped, orphaned }`. The format is still **v1** — every v0.3.0 field is optional and validated when present.
 
 **Mock spec model** (`features/palette/mock/spec.ts`): `MockTemplate { id, label, frames: FrameSpec[] }`; `FrameSpec { variant: 'web'|'mobile'|'sheet', backgroundRole?, sections: SectionSpec[] }`; `SectionSpec { key, label, columns, blocks: BlockSpec[] }`; `BlockSpec { renderKey, overrideKey, role, shape, span?, label?, height?, width? }`. `renderKey` is unique per frame; `overrideKey` is template-scoped and **shared** between a template's web and mobile frames for the same element (one override reaches both). `code` is a composite shape: its own `role` paints the container (the single touchpoint), its internal line bars cycle a fixed `CODE_LINE_ROLES` mapping read from `roleMap`, not individually overridable. `validateTemplates` enforces: unique `renderKey` per frame, every `overrideKey` prefixed with its own template id and absent from every other template, and every block sharing an `overrideKey` declares the same `role`.
 
@@ -288,6 +306,29 @@ sequenceDiagram
   DB-->>MP: change emitter fires → entry.updatedAt advances
 ```
 
+**Capture component (design entry → component entry):**
+
+```mermaid
+sequenceDiagram
+  participant M as Mia
+  participant EP as EntryPage (design)
+  participant CC as ComponentCapture
+  participant CT as CropTool
+  participant CR as cropComponent
+  participant DB as lib/db
+  participant CS as ComponentStrip
+  M->>EP: Capture component (selected image)
+  EP->>CC: parent, imageId, blob, url
+  CC->>CT: rect in local state
+  M->>CT: drag rect, Use crop
+  CC->>CR: cropComponent(blob, rect)
+  CR-->>CC: WebP crop + thumb | ComponentTooLargeError
+  M->>CC: chips, tags, note, Save
+  CC->>DB: createEntry(component, [image]) — validated in the tx
+  DB-->>CS: change emitter → listChildren(parent)
+  CC-->>EP: onDone(id) → strip focuses the new item
+```
+
 **Touchpoint edit (Entry → MockPanel):**
 
 ```mermaid
@@ -324,13 +365,19 @@ sequenceDiagram
 - Template-select failure → selection reverts + "Couldn't save the template choice — Retry" alert.
 - Delete failure → entry and confirm UI stay, inline alert, navigation only on success.
 - Import rejection → `validateExportFile` reports the first offending JSON path; nothing is written.
-- Import collisions → `importMerge` skips id/url collisions and reports "N imported, M skipped".
+- Import collisions → `resolveImport` skips id/url collisions and orphaned components; both modes report "N imported, M skipped, K orphaned components" (orphan clause omitted at 0).
 - OCR assets missing (`predev`/`prebuild` never ran) → `getWorker` rejects, `ocrHexCodes` throws `OcrUnavailableError`, the orchestrator sets `ocrUnavailable: true` and falls through to blobs/quantize — the review panel's summary says "OCR unavailable" rather than presenting a blank palette.
 - Read cancelled mid-way → orchestrator and worker reject with `ReadCancelledError`; Capture falls back to quantize `extract()` so Save still produces an entry, `MockPanel`/`EntryPage` leave the palette untouched (nothing queued, nothing written).
 - No crop and no card-like blob (nothing ≥1.5% area, non-edge) → `autoCropFrom` returns nothing, OCR is skipped entirely, and the read falls through to blobs/quantize.
 - Degraded or no-text read → `ReadPalettePanel`'s summary line: "Read N hex codes from the card" (ocr), "No hex text found — using swatch shapes" (blobs, no OCR unavailability), "OCR unavailable — using swatch shapes" / "…using quantized colors" (engine down), "Using quantized colors" (plain fallback).
 - Crop save failure (`saveCrop` in `MockPanel`) → the optimistic rect reverts to the last known-persisted `crop`, with a "Couldn't save the crop — Retry" alert re-attempting the same write (including a retryable `null` for a failed Clear).
 - Stale crop (`crop.imageId !== sourceImageId`) → silently ignored by `readPalette`; the next crop drawn simply overwrites it. Nobody clears it proactively.
+- Empty URL → valid; Save needs only an image. Invalid non-empty URL still blocks Save.
+- IndexedDB upgrade failure → in-memory fallback with `storageFallbackReason() === 'upgrade-failed'`; the banner says the saved entries are intact but not loaded.
+- Component crop over 12 MB → `ComponentTooLargeError`, back to the crop step with "Crop is too large — draw a smaller area"; nothing written.
+- Component validation failure in `createEntry` (missing/component parent, foreign `parentImageId`, wrong image count/source) → rejected `DataError`, form stays with an inline error.
+- Parent deleted → its components are deleted in the same transaction; a component page whose parent is gone shows "Parent no longer available".
+- Import: a component whose parent is absent, skipped for a collision, or lacks the referenced image → orphaned (skipped + counted in the result line).
 
 ## 16. Testing Strategy
 
@@ -338,13 +385,17 @@ Vitest + jsdom + Testing Library + fake-indexeddb; see `docs/4-unit-tests/TESTIN
 
 The read pipeline follows the same pure-vs-Canvas/worker split: `hexTokens`, `swatchBlobs`, `blobSpace`, `cropRect` are pure and directly unit-tested with synthetic word/pixel-buffer inputs; `ocrWorker` mocks `tesseract.js`'s `createWorker` (`vi.mock('tesseract.js', ...)`, keeping the real `OEM`/`PSM` exports via `importOriginal`) to test the lazy-singleton lifecycle, idle teardown, and abort races under `vi.useFakeTimers()`; `readPalette.test.ts` mocks `downsample`, `extract`, `cropToBlob`/`downscaleForOcr`, `ocrHexCodes`, and `detectSwatchBlobs` to test orchestration in isolation (auto-crop selection, the two-pass union and its early stop, the ocr→blobs→quantize fallthrough, cancellation). `cropToBlob`/`downscaleForOcr` themselves are Canvas-bound and manual-only, like `downsample`.
 
-Current counts (`npx vitest run`, 2026-09-16): **38 test files, 311 tests, all passing.**
+v0.3.0 adds: the schema upgrade seam (build v1 with `openDB('ui-rover', 1)` under fake-indexeddb, then call the module's `openDb()`), a forced-in-memory test that two URL-less entries coexist, component relationship + atomic cascade tests, pure `resolveImport` tests (collisions, the Merge/Replace parent sets, orphans, ordering), and component UI tests with `CropTool` stubbed and `cropComponent` mocked (the editable-chips persistence test uses the real 300 ms debounce). `cropComponent` itself is Canvas-bound and manual-only.
+
+Current counts (`npx vitest run`, 2026-09-17): **46 test files, 412 tests, all passing.**
 
 ## 17. Performance Considerations
 
 Thumbs (≤320px) are generated at capture time, not at render time. The library grid reads a thumb only once its `EntryCard` has entered the viewport (`IntersectionObserver` via `useThumbUrl`), so a large library never materializes every blob on mount. Object URLs are created and revoked inside the same effect everywhere they're used (`useImageUrl`, `useThumbUrl`, `useImageIntake`) so React 19 StrictMode's double-invoke can't leak one. Palettes are computed once at extraction and stored, not recomputed on render. Edits to note/tags/palette go through `useDebouncedPatch` (300 ms merge) rather than writing on every keystroke.
 
 The read pipeline adds its own costs, all one-time or bounded: the Tesseract worker singleton (§12) costs ~1–3 s and ~50 MB on first creation (engine load — browser wasm fetch + gunzip of the traineddata, slower than the Node spike numbers) and is torn down after 60 s idle. Each OCR pass costs ~200–450 ms warm. Assets are ≈15 MB on disk (`public/ocr/`: worker ≈0.1 MB, three LSTM-only wasm core builds ≈3.9 MB each, `eng.traineddata.gz` ≈2.95 MB) but a browser fetches only the one core build it feature-detects plus the language data, ≈7 MB, same-origin, once per session (`cacheMethod: 'none'` means the HTTP cache is the only cache — no second IndexedDB). Blob detection runs twice per read on a ≤240px buffer (well under 20 ms each); crop/quantize upscaling is capped at 2000px.
+
+Components: the strip and the cascade use the `by-parent` index (no library scan); crops are materialized once at capture (WebP, typically tens of KB) rather than re-cropped on render. Library grid thumbs stay intersection-gated; the Components strip loads its few thumbs eagerly on purpose (it only exists on the parent page and is on screen immediately).
 
 ## 18. Security Considerations
 
@@ -357,3 +408,5 @@ Single-user, local-only. No remote requests. Pasted images never leave the brows
 ## 20. Conclusion
 
 Key decisions as built: client-only with screenshot-as-source (no Meta API), IndexedDB (`idb`) + JSON export/import v1 as the only backup path, `HashRouter` for zero-rewrite static hosting, feature folders with `lib/` for pure helpers, Tailwind v4 tokens in CSS, a data-driven wireframe-mock spec (11 templates) with role-level-by-default + per-block-override touchpoints, single-owner persistence per field group with debounced autosave (flush/retry/discard), and synthetic-buffer unit tests around a Canvas-bound pipeline verified manually in the browser. v0.2.0 adds a **measured** OCR-first read strategy (printed hex codes → swatch-blob shapes → quantize, in that priority because exactness beats guessing beats "something is always there"), bundled same-origin Tesseract.js assets with no CDN and no second database, a Mia-drawn or auto-detected crop stored per entry, and a review-before-trust checklist step even when a read applies immediately on save — because a plausible-looking OCR misread is worse than one extra click.
+
+v0.3.0 makes **id the identity** (URL optional) and adds **component entries as first-class records with provenance** — own image, `parentId`/`parentImageId`/`sourceRect`, never an overloaded `sourceImageId` — guarded by three integrity rules (validated create, one-level cascade delete, two-pass import resolution) and a version-aware schema upgrade that can no longer masquerade as an empty library.

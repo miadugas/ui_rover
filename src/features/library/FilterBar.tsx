@@ -1,11 +1,19 @@
 import type { ReactNode } from 'react'
 import { Field } from '../../components/Field'
-import type { KindFilter, LibraryFilters, PlatformFilter } from './filters'
+import { chipClassName } from '../../components/chipStyles'
+import { COMPONENT_TAG_LABELS, orderedComponentTags } from '../components/componentTags'
+import type {
+  ComponentTagFilter,
+  KindFilter,
+  LibraryFilters,
+  PlatformFilter,
+} from './filters'
 
 const KIND_OPTIONS: ReadonlyArray<{ value: KindFilter; label: string }> = [
   { value: 'all', label: 'All' },
   { value: 'palette', label: 'Palette' },
   { value: 'design', label: 'Design' },
+  { value: 'component', label: 'Component' },
 ]
 
 const PLATFORM_OPTIONS: ReadonlyArray<{ value: PlatformFilter; label: string }> = [
@@ -14,14 +22,16 @@ const PLATFORM_OPTIONS: ReadonlyArray<{ value: PlatformFilter; label: string }> 
   { value: 'threads', label: 'Threads' },
 ]
 
-const CHIP_BASE = [
-  'label-mono rounded-block border px-2 py-1 transition-colors',
-  'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent',
-].join(' ')
-
-const CHIP_ON = 'border-chrome-300 bg-chrome-200 text-chrome-900'
-const CHIP_OFF =
-  'border-chrome-200 bg-transparent text-chrome-500 hover:text-chrome-800'
+const COMPONENT_TAG_OPTIONS: ReadonlyArray<{
+  value: ComponentTagFilter
+  label: string
+}> = [
+  { value: 'all', label: 'All' },
+  ...orderedComponentTags().map((tag) => ({
+    value: tag,
+    label: COMPONENT_TAG_LABELS[tag],
+  })),
+]
 
 interface ChipProps {
   label: string
@@ -35,7 +45,7 @@ function Chip({ label, pressed, onClick }: ChipProps) {
       type="button"
       aria-pressed={pressed}
       onClick={onClick}
-      className={`${CHIP_BASE} ${pressed ? CHIP_ON : CHIP_OFF}`}
+      className={chipClassName(pressed)}
     >
       {label}
     </button>
@@ -64,10 +74,16 @@ function ChipGroup({ id, label, children }: ChipGroupProps) {
 export interface FilterBarProps {
   filters: LibraryFilters
   allTags: string[]
+  showComponentTags?: boolean
   onChange: (filters: LibraryFilters) => void
 }
 
-export function FilterBar({ filters, allTags, onChange }: FilterBarProps) {
+export function FilterBar({
+  filters,
+  allTags,
+  showComponentTags = false,
+  onChange,
+}: FilterBarProps) {
   const sortedTags = [...allTags].sort((left, right) => left.localeCompare(right))
 
   const toggleTag = (tag: string) => {
@@ -100,6 +116,19 @@ export function FilterBar({ filters, allTags, onChange }: FilterBarProps) {
           />
         ))}
       </ChipGroup>
+
+      {showComponentTags && (
+        <ChipGroup id="library-component-tag-label" label="Component type">
+          {COMPONENT_TAG_OPTIONS.map((option) => (
+            <Chip
+              key={option.value}
+              label={option.label}
+              pressed={filters.componentTag === option.value}
+              onClick={() => onChange({ ...filters, componentTag: option.value })}
+            />
+          ))}
+        </ChipGroup>
+      )}
 
       {sortedTags.length > 0 && (
         <ChipGroup id="library-tags-label" label="Tags">

@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { Badge } from '../../components/Badge'
-import { PLATFORM_LABEL } from '../../lib/platform'
+import { PLATFORM_LABEL, entryTitle } from '../../lib/platform'
+import { COMPONENT_TAG_LABELS } from '../components/componentTags'
 import type { Entry } from '../../types'
 import { useThumbUrl } from './useThumbUrl'
 
 const SWATCH_LIMIT = 6
 const TAG_LIMIT = 3
+const COMPONENT_CHIP_LIMIT = 3
 const NOTE_EXCERPT_LENGTH = 80
 
 function noteExcerpt(note: string): string {
@@ -60,14 +62,18 @@ function useHasEnteredViewport(): [
 
 export interface EntryCardProps {
   entry: Entry
+  parent?: Entry
 }
 
-export function EntryCard({ entry }: EntryCardProps) {
+export function EntryCard({ entry, parent }: EntryCardProps) {
   const [setNode, visible] = useHasEnteredViewport()
   const thumbUrl = useThumbUrl(entry.images[0]?.id, visible)
 
+  const isComponent = entry.kind === 'component'
+  const title = entryTitle(entry, parent)
   const swatches = entry.colors?.slice(0, SWATCH_LIMIT) ?? []
   const tags = entry.tags.slice(0, TAG_LIMIT)
+  const componentChips = (entry.componentTags ?? []).slice(0, COMPONENT_CHIP_LIMIT)
   const excerpt = noteExcerpt(entry.note)
 
   return (
@@ -80,7 +86,7 @@ export function EntryCard({ entry }: EntryCardProps) {
         {thumbUrl && (
           <img
             src={thumbUrl}
-            alt=""
+            alt={title}
             className="h-full w-full object-cover"
             loading="lazy"
           />
@@ -88,9 +94,29 @@ export function EntryCard({ entry }: EntryCardProps) {
       </div>
 
       <div className="flex flex-wrap items-center gap-1">
-        <Badge>{PLATFORM_LABEL[entry.platform]}</Badge>
-        <Badge tone="accent">{entry.kind}</Badge>
+        {!isComponent && entry.platform && (
+          <Badge>{PLATFORM_LABEL[entry.platform]}</Badge>
+        )}
+        <Badge tone="accent">{isComponent ? 'COMPONENT' : entry.kind}</Badge>
+        <span className="label-mono text-chrome-700">{title}</span>
       </div>
+
+      {isComponent && componentChips.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          {componentChips.map((tag) => (
+            <span
+              key={tag}
+              className="label-mono rounded-block bg-chrome-100 px-1.5 py-0.5 text-chrome-600"
+            >
+              {COMPONENT_TAG_LABELS[tag]}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {isComponent && parent && (
+        <p className="text-xs text-chrome-500">from {entryTitle(parent)}</p>
+      )}
 
       {swatches.length > 0 && (
         <div className="flex items-center gap-0.5">

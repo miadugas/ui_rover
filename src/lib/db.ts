@@ -3,7 +3,12 @@ import type { DBSchema, IDBPDatabase } from 'idb'
 import type { Entry, ImageRecord, Kind } from '../types'
 
 const DATABASE_NAME = 'ui-rover'
-const DATABASE_VERSION = 1
+const DATABASE_VERSION = 2
+
+export type StorageFallbackReason =
+  | 'none'
+  | 'unavailable'
+  | 'upgrade-failed'
 
 export interface UiRoverDB extends DBSchema {
   entries: {
@@ -13,6 +18,7 @@ export interface UiRoverDB extends DBSchema {
       'by-url': string
       'by-kind': Kind
       'by-createdAt': number
+      'by-parent': string
     }
   }
   images: {
@@ -35,6 +41,7 @@ type ChangeListener = () => void
 
 let databasePromise: Promise<IDBPDatabase<UiRoverDB> | null> | null = null
 let inMemory = false
+let fallbackReason: StorageFallbackReason = 'none'
 let memoryEntries = new Map<string, Entry>()
 let memoryImages = new Map<string, ImageRecord>()
 
@@ -50,6 +57,10 @@ function cloneEntry(entry: Entry): Entry {
     ...(entry.roleMap ? { roleMap: { ...entry.roleMap } } : {}),
     ...(entry.blockOverrides
       ? { blockOverrides: { ...entry.blockOverrides } }
+      : {}),
+    ...(entry.sourceRect ? { sourceRect: { ...entry.sourceRect } } : {}),
+    ...(entry.componentTags
+      ? { componentTags: [...entry.componentTags] }
       : {}),
   }
 }
@@ -95,6 +106,43 @@ function assertImagesBelongToEntry(
   }
 }
 
+function assertCreateEntryRelationships(
+  entry: Entry,
+  images: readonly ImageRecord[],
+  parent: Entry | undefined,
+): void {
+  if (entry.kind !== 'component') {
+    if (entry.parentId !== undefined) {
+      throw dataError('A non-component entry cannot have a parent')
+    }
+    if (entry.componentTags !== undefined) {
+      throw dataError('A non-component entry cannot have component tags')
+    }
+    return
+  }
+
+  if (!entry.parentId || !parent) {
+    throw dataError('A component must reference an existing parent')
+  }
+  if (parent.kind === 'component') {
+    throw dataError('A component cannot be the parent of another component')
+  }
+  if (
+    !entry.parentImageId ||
+    !parent.images.some((image) => image.id === entry.parentImageId)
+  ) {
+    throw dataError('A component must reference an image on its parent')
+  }
+  if (entry.images.length !== 1 || images.length !== 1) {
+    throw dataError('A component must have exactly one image')
+  }
+
+  const imageId = entry.images[0]?.id
+  if (imageId !== images[0]?.id || entry.sourceImageId !== imageId) {
+    throw dataError('A component source image must be its own image')
+  }
+}
+
 function addToMemoryMaps(
   entries: Map<string, Entry>,
   images: Map<string, ImageRecord>,
@@ -106,11 +154,13 @@ function addToMemoryMaps(
     throw constraintError(`Entry ${item.entry.id} already exists`)
   }
 
-  const duplicateUrl = Array.from(entries.values()).some(
-    (entry) => entry.url === item.entry.url,
-  )
-  if (duplicateUrl) {
-    throw constraintError(`URL ${item.entry.url} already exists`)
+  if (item.entry.url) {
+    const duplicateUrl = Array.from(entries.values()).some(
+      (entry) => entry.url === item.entry.url,
+    )
+    if (duplicateUrl) {
+      throw constraintError(`URL ${item.entry.url} already exists`)
+    }
   }
 
   entries.set(item.entry.id, cloneEntry(item.entry))
@@ -162,27 +212,42 @@ async function abortAndRethrow(
 async function openIndexedDb(): Promise<IDBPDatabase<UiRoverDB> | null> {
   if (typeof indexedDB === 'undefined') {
     inMemory = true
+    fallbackReason = 'unavailable'
     return null
   }
 
+  let upgradeStarted = false
+
   try {
     return await openDB<UiRoverDB>(DATABASE_NAME, DATABASE_VERSION, {
-      upgrade(database) {
-        const entries = database.createObjectStore('entries', {
-          keyPath: 'id',
-        })
-        entries.createIndex('by-url', 'url', { unique: true })
-        entries.createIndex('by-kind', 'kind')
-        entries.createIndex('by-createdAt', 'createdAt')
+      upgrade(database, oldVersion, _newVersion, transaction) {
+        upgradeStarted = true
+        void transaction.done.catch(() => undefined)
 
-        const images = database.createObjectStore('images', {
-          keyPath: 'id',
-        })
-        images.createIndex('by-entry', 'entryId')
+        if (oldVersion < 1) {
+          const entries = database.createObjectStore('entries', {
+            keyPath: 'id',
+          })
+          entries.createIndex('by-url', 'url', { unique: true })
+          entries.createIndex('by-kind', 'kind')
+          entries.createIndex('by-createdAt', 'createdAt')
+
+          const images = database.createObjectStore('images', {
+            keyPath: 'id',
+          })
+          images.createIndex('by-entry', 'entryId')
+        }
+
+        if (oldVersion < 2) {
+          transaction
+            .objectStore('entries')
+            .createIndex('by-parent', 'parentId')
+        }
       },
     })
   } catch {
     inMemory = true
+    fallbackReason = upgradeStarted ? 'upgrade-failed' : 'unavailable'
     return null
   }
 }
@@ -198,6 +263,10 @@ export function isInMemory(): boolean {
   return inMemory
 }
 
+export function storageFallbackReason(): StorageFallbackReason {
+  return fallbackReason
+}
+
 export function subscribe(listener: ChangeListener): () => void {
   changeListeners.add(listener)
   return () => changeListeners.delete(listener)
@@ -211,6 +280,10 @@ export async function createEntry(
 
   const database = await openDb()
   if (!database) {
+    const parent = entry.parentId
+      ? memoryEntries.get(entry.parentId)
+      : undefined
+    assertCreateEntryRelationships(entry, images, parent)
     applyMemoryBatch([{ entry, images }], false)
     emitChange()
     return
@@ -219,7 +292,13 @@ export async function createEntry(
   const transaction = database.transaction(['entries', 'images'], 'readwrite')
 
   try {
-    await transaction.objectStore('entries').add(entry)
+    const entryStore = transaction.objectStore('entries')
+    const parent = entry.parentId
+      ? await entryStore.get(entry.parentId)
+      : undefined
+    assertCreateEntryRelationships(entry, images, parent)
+
+    await entryStore.add(entry)
     for (const image of images) {
       await transaction.objectStore('images').add(image)
     }
@@ -234,9 +313,16 @@ export async function createEntry(
 export async function deleteEntry(id: string): Promise<void> {
   const database = await openDb()
   if (!database) {
-    memoryEntries.delete(id)
+    const entryIds = new Set([id])
+    for (const entry of memoryEntries.values()) {
+      if (entry.parentId === id) entryIds.add(entry.id)
+    }
+
     for (const [imageId, image] of memoryImages) {
-      if (image.entryId === id) memoryImages.delete(imageId)
+      if (entryIds.has(image.entryId)) memoryImages.delete(imageId)
+    }
+    for (const entryId of entryIds) {
+      memoryEntries.delete(entryId)
     }
     emitChange()
     return
@@ -245,12 +331,25 @@ export async function deleteEntry(id: string): Promise<void> {
   const transaction = database.transaction(['entries', 'images'], 'readwrite')
 
   try {
+    const entryStore = transaction.objectStore('entries')
     const imageStore = transaction.objectStore('images')
+    const childIds = await entryStore.index('by-parent').getAllKeys(id)
+
+    for (const childId of childIds) {
+      const childImageIds = await imageStore
+        .index('by-entry')
+        .getAllKeys(childId)
+      for (const imageId of childImageIds) {
+        await imageStore.delete(imageId)
+      }
+      await entryStore.delete(childId)
+    }
+
     const imageIds = await imageStore.index('by-entry').getAllKeys(id)
     for (const imageId of imageIds) {
       await imageStore.delete(imageId)
     }
-    await transaction.objectStore('entries').delete(id)
+    await entryStore.delete(id)
     await transaction.done
   } catch (error) {
     return abortAndRethrow(transaction, error)
@@ -266,11 +365,13 @@ async function performUpdate(id: string, patch: EntryPatch): Promise<void> {
     if (!currentEntry) throw dataError(`Entry ${id} does not exist`)
 
     const nextEntry = cloneEntry(applyPatch(currentEntry, patch, id))
-    const duplicateUrl = Array.from(memoryEntries.values()).some(
-      (entry) => entry.id !== id && entry.url === nextEntry.url,
-    )
-    if (duplicateUrl) {
-      throw constraintError(`URL ${nextEntry.url} already exists`)
+    if (nextEntry.url) {
+      const duplicateUrl = Array.from(memoryEntries.values()).some(
+        (entry) => entry.id !== id && entry.url === nextEntry.url,
+      )
+      if (duplicateUrl) {
+        throw constraintError(`URL ${nextEntry.url} already exists`)
+      }
     }
 
     memoryEntries.set(id, nextEntry)
@@ -332,6 +433,20 @@ export async function listEntries(): Promise<Entry[]> {
   )
 }
 
+export async function listChildren(parentId: string): Promise<Entry[]> {
+  const database = await openDb()
+  const entries = database
+    ? await database.getAllFromIndex('entries', 'by-parent', parentId)
+    : Array.from(memoryEntries.values())
+        .filter((entry) => entry.parentId === parentId)
+        .map(cloneEntry)
+
+  return entries.sort(
+    (left, right) =>
+      left.createdAt - right.createdAt || left.id.localeCompare(right.id),
+  )
+}
+
 export async function getImageBlob(id: string): Promise<Blob | undefined> {
   const database = await openDb()
   if (!database) return memoryImages.get(id)?.blob
@@ -359,7 +474,11 @@ export async function listImagesForEntry(
   return images.sort((left, right) => left.order - right.order)
 }
 
-export async function findByUrl(url: string): Promise<Entry | undefined> {
+export async function findByUrl(
+  url: string | undefined,
+): Promise<Entry | undefined> {
+  if (!url) return undefined
+
   const database = await openDb()
   if (!database) {
     const entry = Array.from(memoryEntries.values()).find(
@@ -433,6 +552,7 @@ export async function __resetDatabaseForTests(
   memoryImages.clear()
   updateQueues.clear()
   inMemory = options.forceInMemory ?? false
+  fallbackReason = inMemory ? 'unavailable' : 'none'
 
   if (typeof indexedDB !== 'undefined') {
     await deleteDB(DATABASE_NAME)

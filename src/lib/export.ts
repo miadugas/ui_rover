@@ -1,9 +1,8 @@
 import { makeThumb } from '../features/capture/imageMeta'
 import { MIN_CROP_EDGE } from '../features/palette/read/cropRect'
-import { MOCK_TEMPLATE_IDS, ROLES } from '../types'
+import { COMPONENT_TAGS, MOCK_TEMPLATE_IDS, ROLES } from '../types'
 import type { Entry, ExportFileV1, ImageRecord } from '../types'
 import {
-  findByUrl,
   importEntries,
   listEntries,
   listImagesForEntry,
@@ -17,7 +16,8 @@ const DECODE_CHUNK_CHARACTERS = 4 * 1024 * 1024
 const HEX_COLOR = /^#[0-9a-f]{6}$/i
 
 const PLATFORMS = new Set(['instagram', 'threads'])
-const KINDS = new Set(['palette', 'design'])
+const KINDS = new Set(['palette', 'design', 'component'])
+const COMPONENT_TAG_VALUES = new Set<string>(COMPONENT_TAGS)
 const MOCK_TEMPLATES = new Set<string>(MOCK_TEMPLATE_IDS)
 const PALETTE_SOURCES = new Set(['ocr', 'blobs', 'quantize'])
 
@@ -81,20 +81,62 @@ function validateStringArray(value: unknown, path: string): string | null {
   return null
 }
 
+function validatePostMetadata(
+  value: Record<string, unknown>,
+  path: string,
+): string | null {
+  const hasUrl = 'url' in value
+
+  if (!hasUrl) {
+    for (const key of ['platform', 'shortcode', 'author'] as const) {
+      if (key in value) return `${path}.${key} must be omitted when url is missing`
+    }
+    return null
+  }
+
+  const urlProblem = stringProblem(value.url, `${path}.url`)
+  if (urlProblem) return urlProblem
+
+  if (typeof value.platform !== 'string' || !PLATFORMS.has(value.platform)) {
+    return `${path}.platform must be instagram or threads when url is present`
+  }
+
+  const shortcodeProblem = stringProblem(value.shortcode, `${path}.shortcode`)
+  if (shortcodeProblem) return shortcodeProblem
+
+  if ('author' in value) {
+    return stringProblem(value.author, `${path}.author`)
+  }
+
+  return null
+}
+
+function validateComponentTags(value: unknown, path: string): string | null {
+  if (!Array.isArray(value)) return `${path} must be an array`
+
+  for (let index = 0; index < value.length; index += 1) {
+    const tag = value[index]
+    if (typeof tag !== 'string' || !COMPONENT_TAG_VALUES.has(tag)) {
+      return `${path}[${index}] must be a known component tag`
+    }
+  }
+
+  return null
+}
+
 function validateEntry(value: unknown, path: string): string | null {
   if (!isRecord(value)) return `${path} must be an object`
 
-  for (const key of ['id', 'url', 'shortcode', 'note'] as const) {
+  for (const key of ['id', 'note'] as const) {
     const problem = stringProblem(value[key], `${path}.${key}`)
     if (problem) return problem
   }
 
-  if (typeof value.platform !== 'string' || !PLATFORMS.has(value.platform)) {
-    return `${path}.platform must be instagram or threads`
-  }
+  const postMetadataProblem = validatePostMetadata(value, path)
+  if (postMetadataProblem) return postMetadataProblem
 
   if (typeof value.kind !== 'string' || !KINDS.has(value.kind)) {
-    return `${path}.kind must be palette or design`
+    return `${path}.kind must be palette, design, or component`
   }
 
   for (const key of ['createdAt', 'updatedAt'] as const) {
@@ -114,7 +156,7 @@ function validateEntry(value: unknown, path: string): string | null {
     if (problem) return problem
   }
 
-  for (const key of ['author', 'sourceImageId'] as const) {
+  for (const key of ['sourceImageId'] as const) {
     if (!(key in value)) continue
 
     const problem = stringProblem(value[key], `${path}.${key}`)
@@ -171,6 +213,73 @@ function validateEntry(value: unknown, path: string): string | null {
     if (cropProblem) return cropProblem
   }
 
+  if (value.kind === 'component') {
+    if ('componentTags' in value) {
+      const componentTagsProblem = validateComponentTags(
+        value.componentTags,
+        `${path}.componentTags`,
+      )
+      if (componentTagsProblem) return componentTagsProblem
+    }
+
+    for (const key of ['parentId', 'parentImageId'] as const) {
+      const problem = stringProblem(value[key], `${path}.${key}`)
+      if (problem) return problem
+    }
+
+    const sourceRectProblem = validateRect(
+      value.sourceRect,
+      `${path}.sourceRect`,
+    )
+    if (sourceRectProblem) return sourceRectProblem
+
+    if (value.images.length !== 1) {
+      return `${path}.images must contain exactly one component image`
+    }
+
+    const componentImage = value.images[0]
+    const componentImageId = isRecord(componentImage)
+      ? componentImage.id
+      : undefined
+    if (value.sourceImageId !== componentImageId) {
+      return `${path}.sourceImageId must match the component image id`
+    }
+  } else {
+    for (const key of [
+      'parentId',
+      'parentImageId',
+      'sourceRect',
+      'componentTags',
+    ] as const) {
+      if (key in value) {
+        return `${path}.${key} is only allowed on component entries`
+      }
+    }
+  }
+
+  return null
+}
+
+function validateRect(value: unknown, path: string): string | null {
+  if (!isRecord(value)) return `${path} must be an object`
+
+  for (const key of ['x', 'y', 'w', 'h'] as const) {
+    const problem = numberProblem(value[key], `${path}.${key}`)
+    if (problem) return problem
+  }
+
+  const x = value.x as number
+  const y = value.y as number
+  const w = value.w as number
+  const h = value.h as number
+
+  if (x < 0 || x > 1) return `${path}.x must be between 0 and 1`
+  if (y < 0 || y > 1) return `${path}.y must be between 0 and 1`
+  if (w < MIN_CROP_EDGE) return `${path}.w must be at least ${MIN_CROP_EDGE}`
+  if (h < MIN_CROP_EDGE) return `${path}.h must be at least ${MIN_CROP_EDGE}`
+  if (x + w > 1) return `${path}.w must satisfy x + w <= 1`
+  if (y + h > 1) return `${path}.h must satisfy y + h <= 1`
+
   return null
 }
 
@@ -193,24 +302,7 @@ function validateCrop(
     return `${path}.imageId must match one of this entry's images`
   }
 
-  for (const key of ['x', 'y', 'w', 'h'] as const) {
-    const problem = numberProblem(value[key], `${path}.${key}`)
-    if (problem) return problem
-  }
-
-  const x = value.x as number
-  const y = value.y as number
-  const w = value.w as number
-  const h = value.h as number
-
-  if (x < 0 || x > 1) return `${path}.x must be between 0 and 1`
-  if (y < 0 || y > 1) return `${path}.y must be between 0 and 1`
-  if (w < MIN_CROP_EDGE) return `${path}.w must be at least ${MIN_CROP_EDGE}`
-  if (h < MIN_CROP_EDGE) return `${path}.h must be at least ${MIN_CROP_EDGE}`
-  if (x + w > 1) return `${path}.w must satisfy x + w <= 1`
-  if (y + h > 1) return `${path}.h must satisfy y + h <= 1`
-
-  return null
+  return validateRect(value, path)
 }
 
 async function blobToBase64(blob: Blob): Promise<string> {
@@ -392,35 +484,120 @@ export async function prepareImport(file: ExportFileV1): Promise<ImportEntry[]> 
   return batch
 }
 
-export async function importMerge(
+export interface ImportOutcome {
+  imported: number
+  skipped: number
+  orphaned: number
+}
+
+export interface ImportResolution {
+  accepted: ImportEntry[]
+  skipped: number
+  orphaned: number
+}
+
+export function resolveImport(
   batch: ImportEntry[],
-): Promise<{ imported: number; skipped: number }> {
-  const existingEntries = await listEntries()
-  const reservedIds = new Set(existingEntries.map((entry) => entry.id))
-  const reservedUrls = new Set<string>()
-  const importable: ImportEntry[] = []
+  options: { mode: 'merge' | 'replace'; existing: Entry[] },
+): ImportResolution {
+  const collisionFree: ImportEntry[] = []
+  let skipped = 0
 
-  for (const item of batch) {
-    const hasIdCollision = reservedIds.has(item.entry.id)
-    const hasUrlCollision =
-      reservedUrls.has(item.entry.url) ||
-      Boolean(await findByUrl(item.entry.url))
+  if (options.mode === 'replace') {
+    collisionFree.push(...batch)
+  } else {
+    const reservedIds = new Set(options.existing.map((entry) => entry.id))
+    const reservedUrls = new Set(
+      options.existing.flatMap((entry) =>
+        entry.url === undefined ? [] : [entry.url],
+      ),
+    )
 
-    if (hasIdCollision || hasUrlCollision) continue
+    for (const item of batch) {
+      const url = item.entry.url
+      const hasIdCollision = reservedIds.has(item.entry.id)
+      const hasUrlCollision =
+        url !== undefined && reservedUrls.has(url)
 
-    reservedIds.add(item.entry.id)
-    reservedUrls.add(item.entry.url)
-    importable.push(item)
+      if (hasIdCollision || hasUrlCollision) {
+        skipped += 1
+        continue
+      }
+
+      reservedIds.add(item.entry.id)
+      if (url !== undefined) reservedUrls.add(url)
+      collisionFree.push(item)
+    }
   }
 
-  if (importable.length > 0) await importEntries(importable)
+  const parentsById = new Map<string, Entry>()
+  if (options.mode === 'merge') {
+    for (const entry of options.existing) {
+      if (entry.kind !== 'component') parentsById.set(entry.id, entry)
+    }
+  }
+  for (const item of collisionFree) {
+    if (item.entry.kind !== 'component') {
+      parentsById.set(item.entry.id, item.entry)
+    }
+  }
+
+  const parents: ImportEntry[] = []
+  const components: ImportEntry[] = []
+  let orphaned = 0
+
+  for (const item of collisionFree) {
+    if (item.entry.kind !== 'component') {
+      parents.push(item)
+      continue
+    }
+
+    const parent = item.entry.parentId
+      ? parentsById.get(item.entry.parentId)
+      : undefined
+    const hasParentImage = parent?.images.some(
+      (image) => image.id === item.entry.parentImageId,
+    )
+    if (!parent || !hasParentImage) {
+      orphaned += 1
+      continue
+    }
+
+    components.push(item)
+  }
 
   return {
-    imported: importable.length,
-    skipped: batch.length - importable.length,
+    accepted: [...parents, ...components],
+    skipped,
+    orphaned,
   }
 }
 
-export function importReplace(batch: ImportEntry[]): Promise<void> {
-  return replaceAll(batch)
+export async function importMerge(batch: ImportEntry[]): Promise<ImportOutcome> {
+  const resolution = resolveImport(batch, {
+    mode: 'merge',
+    existing: await listEntries(),
+  })
+  if (resolution.accepted.length > 0) {
+    await importEntries(resolution.accepted)
+  }
+
+  return {
+    imported: resolution.accepted.length,
+    skipped: resolution.skipped,
+    orphaned: resolution.orphaned,
+  }
+}
+
+export async function importReplace(
+  batch: ImportEntry[],
+): Promise<ImportOutcome> {
+  const resolution = resolveImport(batch, { mode: 'replace', existing: [] })
+  await replaceAll(resolution.accepted)
+
+  return {
+    imported: resolution.accepted.length,
+    skipped: resolution.skipped,
+    orphaned: resolution.orphaned,
+  }
 }

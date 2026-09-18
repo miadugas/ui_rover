@@ -7,6 +7,20 @@ import type { Entry, ImageRecord } from '../../types'
 import { INVALID_URL_MESSAGE, UrlField } from './UrlField'
 import type { UrlFieldChange } from './UrlField'
 
+const findByUrlSpy = vi.hoisted(() => vi.fn())
+
+vi.mock('../../lib/db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/db')>()
+
+  return {
+    ...actual,
+    findByUrl: (url: string) => {
+      findByUrlSpy(url)
+      return actual.findByUrl(url)
+    },
+  }
+})
+
 const VALID_IG_URL = 'https://www.instagram.com/p/Cabc123XY/'
 const NORMALIZED_IG_URL = 'https://instagram.com/p/Cabc123XY'
 
@@ -55,11 +69,12 @@ function Harness({ onChange }: { onChange: (change: UrlFieldChange) => void }) {
 function renderField() {
   const onChange = vi.fn<(change: UrlFieldChange) => void>()
   render(<Harness onChange={onChange} />)
-  return { onChange, input: screen.getByLabelText('Post URL') }
+  return { onChange, input: screen.getByLabelText('Post URL (optional)') }
 }
 
 beforeEach(async () => {
   await __resetDatabaseForTests()
+  findByUrlSpy.mockReset()
 })
 
 afterEach(() => {
@@ -76,10 +91,33 @@ describe('UrlField', () => {
     expect(input).toHaveAttribute('aria-invalid', 'true')
   })
 
-  it('shows no error while the field is empty', () => {
-    renderField()
+  it('labels the field as optional', () => {
+    const { input } = renderField()
+
+    expect(input).toHaveAttribute('id', 'capture-url')
+    expect(screen.getByText('Post URL (optional)')).toBeInTheDocument()
+  })
+
+  it('shows no error and no badge while the field is empty', () => {
+    const { input } = renderField()
 
     expect(screen.queryByText(INVALID_URL_MESSAGE)).not.toBeInTheDocument()
+    expect(input).toHaveAttribute('aria-invalid', 'false')
+    expect(screen.queryByText('IG')).not.toBeInTheDocument()
+    expect(screen.queryByText('TH')).not.toBeInTheDocument()
+  })
+
+  it('never looks up a duplicate for an empty or unparsable field', async () => {
+    const { input } = renderField()
+
+    fireEvent.change(input, { target: { value: 'https://example.com/hello' } })
+    fireEvent.change(input, { target: { value: '' } })
+
+    // Past the 200 ms duplicate debounce, so a scheduled lookup would have run.
+    await new Promise((resolve) => setTimeout(resolve, 250))
+
+    expect(screen.queryByText(INVALID_URL_MESSAGE)).not.toBeInTheDocument()
+    expect(findByUrlSpy).not.toHaveBeenCalled()
   })
 
   it('shows the platform badge and reports the parsed URL', async () => {

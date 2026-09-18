@@ -7,6 +7,7 @@ export interface ImageCarouselProps {
   sourceImageId?: string
   selectedId: string
   onSelect: (imageId: string) => void
+  disabled?: boolean
 }
 
 const ARROW_STEP: Record<string, number> = {
@@ -21,6 +22,7 @@ function Thumb({
   index,
   isSource,
   selected,
+  disabled,
   onSelect,
   onKeyDown,
 }: {
@@ -28,6 +30,7 @@ function Thumb({
   index: number
   isSource: boolean
   selected: boolean
+  disabled: boolean
   onSelect: (imageId: string) => void
   onKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => void
 }) {
@@ -39,13 +42,16 @@ function Thumb({
       role="tab"
       id={`carousel-tab-${image.id}`}
       aria-selected={selected}
+      aria-disabled={disabled || undefined}
       aria-controls="carousel-panel"
-      tabIndex={selected ? 0 : -1}
+      disabled={disabled}
+      tabIndex={disabled ? -1 : selected ? 0 : -1}
       onClick={() => onSelect(image.id)}
       onKeyDown={onKeyDown}
       className={[
-        'relative flex h-16 w-16 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-block border',
+        'relative flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-block border',
         'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+        disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
         selected ? 'border-chrome-900' : 'border-chrome-300',
       ].join(' ')}
     >
@@ -88,6 +94,7 @@ export function ImageCarousel({
   sourceImageId,
   selectedId,
   onSelect,
+  disabled = false,
 }: ImageCarouselProps) {
   if (images.length === 0) return null
 
@@ -97,6 +104,8 @@ export function ImageCarousel({
   )
 
   function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    if (disabled) return
+
     const step = ARROW_STEP[event.key]
     if (step === undefined) return
 
@@ -112,6 +121,7 @@ export function ImageCarousel({
         role="tablist"
         aria-label="Screenshots"
         aria-orientation="horizontal"
+        aria-disabled={disabled || undefined}
         className="flex flex-wrap gap-2"
       >
         {images.map((image, index) => (
@@ -121,6 +131,7 @@ export function ImageCarousel({
             index={index}
             isSource={image.id === sourceImageId}
             selected={image.id === images[selectedIndex].id}
+            disabled={disabled}
             onSelect={onSelect}
             onKeyDown={handleKeyDown}
           />

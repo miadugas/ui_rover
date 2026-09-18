@@ -56,6 +56,22 @@ vi.mock('../palette/read/ocrWorker', () => ({
   releaseWorkerSoon: vi.fn(),
 }))
 
+const findByUrlSpy = vi.hoisted(() => vi.fn())
+
+// Only the duplicate lookup is observed; every other db call stays real so the
+// assertions below read the store the component actually wrote to.
+vi.mock('../../lib/db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/db')>()
+
+  return {
+    ...actual,
+    findByUrl: (url: string) => {
+      findByUrlSpy(url)
+      return actual.findByUrl(url)
+    },
+  }
+})
+
 const VALID_IG_URL = 'https://www.instagram.com/p/Cabc123XY/'
 
 function renderCard() {
@@ -86,6 +102,7 @@ beforeEach(async () => {
   extractMock.mockReset()
   readPaletteMock.mockReset()
   navigateMock.mockReset()
+  findByUrlSpy.mockReset()
 })
 
 afterEach(() => {
@@ -96,7 +113,7 @@ describe('CaptureCard', () => {
   it('keeps Save disabled with a valid URL but no image', () => {
     renderCard()
 
-    fireEvent.change(screen.getByLabelText('Post URL'), { target: { value: VALID_IG_URL } })
+    fireEvent.change(screen.getByLabelText('Post URL (optional)'), { target: { value: VALID_IG_URL } })
 
     expect(saveButton()).toBeDisabled()
   })
@@ -104,25 +121,58 @@ describe('CaptureCard', () => {
   it('enables Save once a URL and an image are present', async () => {
     const { container } = renderCard()
 
-    fireEvent.change(screen.getByLabelText('Post URL'), { target: { value: VALID_IG_URL } })
+    fireEvent.change(screen.getByLabelText('Post URL (optional)'), { target: { value: VALID_IG_URL } })
     await addScreenshot(container)
 
     await waitFor(() => expect(saveButton()).toBeEnabled())
   })
 
-  it('leaves Save disabled with an image but no URL', async () => {
+  it('enables Save with an image and no URL at all', async () => {
     const { container } = renderCard()
 
     await addScreenshot(container)
 
+    await waitFor(() => expect(saveButton()).toBeEnabled())
+  })
+
+  it('blocks Save while the URL field holds text that is not a post', async () => {
+    const { container } = renderCard()
+
+    await addScreenshot(container)
+    fireEvent.change(screen.getByLabelText('Post URL (optional)'), {
+      target: { value: 'https://example.com/hello' },
+    })
+
     expect(saveButton()).toBeDisabled()
+  })
+
+  it('saves a URL-less capture without the post fields and without a lookup', async () => {
+    readPaletteMock.mockResolvedValue(READ_RESULT)
+    const { container } = renderCard()
+
+    await addScreenshot(container)
+    await waitFor(() => expect(saveButton()).toBeEnabled())
+
+    fireEvent.click(saveButton())
+
+    await waitFor(async () => {
+      expect(await listEntries()).toHaveLength(1)
+    })
+
+    const [entry] = await listEntries()
+    expect(entry).not.toHaveProperty('url')
+    expect(entry).not.toHaveProperty('platform')
+    expect(entry).not.toHaveProperty('shortcode')
+    expect(entry).not.toHaveProperty('author')
+    expect(entry.images).toHaveLength(1)
+    expect(findByUrlSpy).not.toHaveBeenCalled()
   })
 
   it('falls back to a design entry and hands the warning to the entry route', async () => {
     readPaletteMock.mockRejectedValue(new Error('no colors'))
     const { container } = renderCard()
 
-    fireEvent.change(screen.getByLabelText('Post URL'), { target: { value: VALID_IG_URL } })
+    fireEvent.change(screen.getByLabelText('Post URL (optional)'), { target: { value: VALID_IG_URL } })
     await addScreenshot(container)
     await waitFor(() => expect(saveButton()).toBeEnabled())
 
@@ -146,7 +196,7 @@ describe('CaptureCard', () => {
     readPaletteMock.mockResolvedValue(READ_RESULT)
     const { container } = renderCard()
 
-    fireEvent.change(screen.getByLabelText('Post URL'), { target: { value: VALID_IG_URL } })
+    fireEvent.change(screen.getByLabelText('Post URL (optional)'), { target: { value: VALID_IG_URL } })
     await addScreenshot(container)
     await waitFor(() => expect(saveButton()).toBeEnabled())
 
@@ -182,7 +232,7 @@ describe('CaptureCard', () => {
     })
     const { container } = renderCard()
 
-    fireEvent.change(screen.getByLabelText('Post URL'), { target: { value: VALID_IG_URL } })
+    fireEvent.change(screen.getByLabelText('Post URL (optional)'), { target: { value: VALID_IG_URL } })
     await addScreenshot(container)
     await waitFor(() => expect(saveButton()).toBeEnabled())
 
@@ -213,7 +263,7 @@ describe('CaptureCard', () => {
     )
     const { container } = renderCard()
 
-    fireEvent.change(screen.getByLabelText('Post URL'), { target: { value: VALID_IG_URL } })
+    fireEvent.change(screen.getByLabelText('Post URL (optional)'), { target: { value: VALID_IG_URL } })
     await addScreenshot(container)
     await waitFor(() => expect(saveButton()).toBeEnabled())
 

@@ -69,7 +69,7 @@ export function UrlField({ id = 'capture-url', value, onChange, disabled }: UrlF
   return (
     <Field
       id={id}
-      label="Post URL"
+      label="Post URL (optional)"
       hint="Instagram /p/ or /reel/, or a Threads post"
       error={showError ? INVALID_URL_MESSAGE : undefined}
     >
